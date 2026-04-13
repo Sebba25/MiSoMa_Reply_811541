@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import pydantic_ai; print\\(pydantic_ai.__version__\\)\")",
+      "Bash(python -c \"from pydantic_ai import __version__; print\\(__version__\\)\")",
+      "Bash(pip show:*)",
+      "Bash(pip3 show:*)",
+      "Bash(py -m pip show pydantic-ai)",
+      "Bash(python3 -m pip show pydantic-ai)",
+      "Bash(python:*)",
+      "WebFetch(domain:ai.pydantic.dev)",
+      "WebFetch(domain:pydantic.dev)",
+      "WebSearch",
+      "WebFetch(domain:raw.githubusercontent.com)"
+    ]
+  }
+}

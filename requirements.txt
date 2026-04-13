@@ -1,0 +1,5 @@
+pydantic-ai
+pandas
+numpy
+python-dotenv
+logfire
