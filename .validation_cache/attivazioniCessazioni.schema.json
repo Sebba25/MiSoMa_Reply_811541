@@ -1,0 +1,175 @@
+{
+  "dataset_name": "attivazioniCessazioni",
+  "total_rows": 20102,
+  "total_columns": 19,
+  "column_names": [
+    "_id",
+    "mese",
+    "anno",
+    "codice_ente",
+    "descrizione_ente",
+    "provincia_sede",
+    "regione_sede",
+    "attivazioni",
+    "cessazioni",
+    "RATA",
+    "aggregation-time",
+    "qualifica",
+    "note",
+    "fonte_dato",
+    "Provincia Sede",
+    "CODICE ENTE",
+    "3descrizione",
+    "regione%sede",
+    "att ivazioni"
+  ],
+  "invalid_naming_columns": [
+    "RATA",
+    "aggregation-time",
+    "Provincia Sede",
+    "CODICE ENTE",
+    "3descrizione",
+    "regione%sede",
+    "att ivazioni"
+  ],
+  "data_type_risk_columns": [
+    "RATA"
+  ],
+  "duplicate_semantic_columns": [
+    "codice_ente",
+    "CODICE ENTE",
+    "provincia_sede",
+    "Provincia Sede",
+    "regione_sede",
+    "regione%sede"
+  ],
+  "issues": [
+    {
+      "column_name": "RATA",
+      "issue_type": "naming_standard",
+      "severity": "high",
+      "evidence": "Column name contains uppercase letters, which violates the lowercase snake_case naming rule.",
+      "fix_confidence": "high",
+      "suggested_fix": "rata",
+      "suggested_strategy": "Safe local rename to 'rata'."
+    },
+    {
+      "column_name": "aggregation-time",
+      "issue_type": "naming_standard",
+      "severity": "high",
+      "evidence": "Column name contains a hyphen, which violates the lowercase snake_case naming rule.",
+      "fix_confidence": "high",
+      "suggested_fix": "aggregation_time",
+      "suggested_strategy": "Safe local rename to 'aggregation_time'."
+    },
+    {
+      "column_name": "Provincia Sede",
+      "issue_type": "naming_standard",
+      "severity": "high",
+      "evidence": "Column name contains uppercase letters, and whitespace, which violates the lowercase snake_case naming rule.",
+      "fix_confidence": "high",
+      "suggested_fix": "provincia_sede",
+      "suggested_strategy": "Safe local rename to 'provincia_sede'."
+    },
+    {
+      "column_name": "CODICE ENTE",
+      "issue_type": "naming_standard",
+      "severity": "high",
+      "evidence": "Column name contains uppercase letters, and whitespace, which violates the lowercase snake_case naming rule.",
+      "fix_confidence": "high",
+      "suggested_fix": "codice_ente",
+      "suggested_strategy": "Safe local rename to 'codice_ente'."
+    },
+    {
+      "column_name": "3descrizione",
+      "issue_type": "naming_standard",
+      "severity": "high",
+      "evidence": "Column name contains a leading digit, which violates the lowercase snake_case naming rule.",
+      "fix_confidence": "high",
+      "suggested_fix": "descrizione_3",
+      "suggested_strategy": "Safe local rename to 'descrizione_3'."
+    },
+    {
+      "column_name": "regione%sede",
+      "issue_type": "naming_standard",
+      "severity": "high",
+      "evidence": "Column name contains a percent sign, which violates the lowercase snake_case naming rule.",
+      "fix_confidence": "high",
+      "suggested_fix": "regione_sede",
+      "suggested_strategy": "Safe local rename to 'regione_sede'."
+    },
+    {
+      "column_name": "att ivazioni",
+      "issue_type": "naming_standard",
+      "severity": "high",
+      "evidence": "Column name contains whitespace, which violates the lowercase snake_case naming rule.",
+      "fix_confidence": "high",
+      "suggested_fix": "att_ivazioni",
+      "suggested_strategy": "Safe local rename to 'att_ivazioni'."
+    },
+    {
+      "column_name": "codice_ente",
+      "issue_type": "duplicate_column_semantics",
+      "severity": "medium",
+      "evidence": "Normalized schema name matches the peer column group 'codice_ente', suggesting overlap with: CODICE ENTE.",
+      "fix_confidence": "medium",
+      "suggested_fix": "",
+      "suggested_strategy": "Compare values, null patterns, and business usage with: CODICE ENTE before any merge or drop."
+    },
+    {
+      "column_name": "CODICE ENTE",
+      "issue_type": "duplicate_column_semantics",
+      "severity": "medium",
+      "evidence": "Normalized schema name matches the peer column group 'codice_ente', suggesting overlap with: codice_ente.",
+      "fix_confidence": "medium",
+      "suggested_fix": "",
+      "suggested_strategy": "Compare values, null patterns, and business usage with: codice_ente before any merge or drop."
+    },
+    {
+      "column_name": "provincia_sede",
+      "issue_type": "duplicate_column_semantics",
+      "severity": "medium",
+      "evidence": "Normalized schema name matches the peer column group 'provincia_sede', suggesting overlap with: Provincia Sede.",
+      "fix_confidence": "medium",
+      "suggested_fix": "",
+      "suggested_strategy": "Compare values, null patterns, and business usage with: Provincia Sede before any merge or drop."
+    },
+    {
+      "column_name": "Provincia Sede",
+      "issue_type": "duplicate_column_semantics",
+      "severity": "medium",
+      "evidence": "Normalized schema name matches the peer column group 'provincia_sede', suggesting overlap with: provincia_sede.",
+      "fix_confidence": "medium",
+      "suggested_fix": "",
+      "suggested_strategy": "Compare values, null patterns, and business usage with: provincia_sede before any merge or drop."
+    },
+    {
+      "column_name": "regione_sede",
+      "issue_type": "duplicate_column_semantics",
+      "severity": "medium",
+      "evidence": "Normalized schema name matches the peer column group 'regione_sede', suggesting overlap with: regione%sede.",
+      "fix_confidence": "medium",
+      "suggested_fix": "",
+      "suggested_strategy": "Compare values, null patterns, and business usage with: regione%sede before any merge or drop."
+    },
+    {
+      "column_name": "regione%sede",
+      "issue_type": "duplicate_column_semantics",
+      "severity": "medium",
+      "evidence": "Normalized schema name matches the peer column group 'regione_sede', suggesting overlap with: regione_sede.",
+      "fix_confidence": "medium",
+      "suggested_fix": "",
+      "suggested_strategy": "Compare values, null patterns, and business usage with: regione_sede before any merge or drop."
+    },
+    {
+      "column_name": "RATA",
+      "issue_type": "inferred_type_mismatch",
+      "severity": "medium",
+      "evidence": "Column name suggests temporal data but datetime_parse_pct is only 3.07%, so the values may not align with the expected temporal meaning.",
+      "fix_confidence": "medium",
+      "suggested_fix": "",
+      "suggested_strategy": "Verify the semantic expectation against sample values before attempting type cleaning."
+    }
+  ],
+  "summary": "In the dataset 'attivazioniCessazioni', 7 safe naming fixes were identified. There are duplicate-semantic groups that need review: 'codice_ente', 'provincia_sede', and 'regione_sede'. Additionally, there is a genuine data-type contradiction for the column 'RATA' that requires manual verification."
+}

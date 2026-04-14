@@ -2,12 +2,25 @@ import argparse
 import json
 import os
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
 import logfire
+import pandas as pd
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, CodeExecutionTool, PromptedOutput
-from pydantic_ai.messages import BinaryContent
+from tools import (
+    attach_profile_text,
+    build_column_format_facts,
+    build_completeness_profile,
+    build_dataset_profile,
+    build_schema_local_facts,
+    gzip_text_to_base64,
+    load_dataset_frame,
+    normalized_schema_name,
+    run_agent_with_backoff,
+    SchemaLocalFacts,
+)
 
 load_dotenv()
 
@@ -52,6 +65,10 @@ class SchemaValidationReport(BaseModel):
     summary: str
 
 
+class SchemaSummaryOutput(BaseModel):
+    summary: str
+
+
 class CompletenessColumnFinding(BaseModel):
     column_name: str
     completeness_pct: float = Field(ge=0, le=100)
@@ -77,23 +94,7 @@ class FormatConsistencyFinding(BaseModel):
     column_name: str
     expected_pattern: str
     inconsistent_rows: int = Field(ge=0)
-    evidence: str
-    suggested_strategy: str
-
-
-class CrossColumnFinding(BaseModel):
-    columns: list[str] = Field(default_factory=list)
-    rule_checked: str
-    applicable: bool
-    affected_rows: int = Field(ge=0)
-    evidence: str
-    suggested_strategy: str
-
-
-class DuplicateFinding(BaseModel):
-    duplicate_type: str = Field(description="Use exact or near.")
-    key_columns: list[str] = Field(default_factory=list)
-    affected_rows: int = Field(ge=0)
+    example_inconsistent_values: list[str] = Field(default_factory=list)
     evidence: str
     suggested_strategy: str
 
@@ -102,8 +103,81 @@ class ConsistencyValidationReport(BaseModel):
     dataset_name: str
     total_rows: int = Field(ge=0)
     format_consistency_findings: list[FormatConsistencyFinding] = Field(default_factory=list)
-    cross_column_findings: list[CrossColumnFinding] = Field(default_factory=list)
-    duplicate_findings: list[DuplicateFinding] = Field(default_factory=list)
+    summary: str
+
+
+class ColumnConsistencyReport(BaseModel):
+    finding: FormatConsistencyFinding | None = None
+    summary: str
+
+
+class ColumnCleaningRequest(BaseModel):
+    dataset_name: str
+    column_name: str
+    expected_pattern: str
+    semantic_hint: str
+    dominant_shape: str | None = None
+    dominant_example_values: list[str] = Field(default_factory=list)
+    example_inconsistent_values: list[str] = Field(default_factory=list)
+    suggested_strategy: str
+
+
+class ExampleTransformation(BaseModel):
+    original_value: str
+    cleaned_value: str | None = None
+    rationale: str
+
+
+class ColumnCleanerProgram(BaseModel):
+    column_name: str
+    function_name: str
+    python_code: str = Field(
+        description="Pure Python code defining exactly one cleaning function with the returned function_name."
+    )
+    example_transformations: list[ExampleTransformation] = Field(default_factory=list)
+    verification_summary: str
+    residual_risks: list[str] = Field(default_factory=list)
+
+
+class CellUpdate(BaseModel):
+    row_index: int = Field(ge=0, description="Zero-based row index in the original column.")
+    old_value: str | None = Field(
+        default=None,
+        description="Original value as text for inspection. Use null when the original value is missing.",
+    )
+    new_value: str | None = Field(
+        default=None,
+        description="Replacement value as text. Use null when the cleaned value should become missing.",
+    )
+
+
+class ColumnCleanerExecutionReport(BaseModel):
+    column_name: str
+    function_name: str
+    execution_ok: bool = True
+    changed_rows: int = Field(ge=0)
+    sample_updates: list[CellUpdate] = Field(default_factory=list)
+    unresolved_risks: list[str] = Field(default_factory=list)
+    summary: str
+
+
+class GeneratedCleanerArtifact(BaseModel):
+    column_name: str
+    function_name: str
+    code_path: str
+    changed_rows: int = Field(ge=0)
+    summary: str
+
+
+class CleaningReport(BaseModel):
+    dataset_name: str
+    rows_before: int = Field(ge=0)
+    rows_after: int = Field(ge=0)
+    columns_before: int = Field(ge=0)
+    columns_after: int = Field(ge=0)
+    generated_cleaners: list[GeneratedCleanerArtifact] = Field(default_factory=list)
+    unresolved_risks: list[str] = Field(default_factory=list)
+    cleaned_csv_gzip_base64: str = Field(description="The cleaned CSV encoded as gzip+base64.")
     summary: str
 
 
@@ -113,32 +187,92 @@ class OrchestrationStepResult(BaseModel):
     consistency_validation: ConsistencyValidationReport
 
 
-schema_validator_agent = Agent(
+class CleaningPipelineResult(BaseModel):
+    dataset_name: str
+    source_path: str
+    cleaned_path: str
+    validation_results: OrchestrationStepResult
+    cleaning_requests: list[ColumnCleaningRequest] = Field(default_factory=list)
+    generated_programs: list[ColumnCleanerProgram] = Field(default_factory=list)
+    execution_reports: list[ColumnCleanerExecutionReport] = Field(default_factory=list)
+    cleaning_report: CleaningReport
+
+
+def build_schema_issues(local_facts: SchemaLocalFacts) -> list[SchemaIssue]:
+    issues: list[SchemaIssue] = []
+
+    for column_name in local_facts.invalid_naming_columns:
+        suggested_fix = local_facts.rename_suggestions.get(column_name, "")
+        issues.append(
+            SchemaIssue(
+                column_name=column_name,
+                issue_type="naming_standard",
+                severity="high",
+                evidence=local_facts.naming_reasons.get(
+                    column_name,
+                    "Column name violates the lowercase snake_case naming rule.",
+                ),
+                fix_confidence="high",
+                suggested_fix=suggested_fix,
+                suggested_strategy=f"Safe local rename to '{suggested_fix}'.",
+            )
+        )
+
+    for duplicate_group in local_facts.duplicate_groups:
+        for column_name in duplicate_group.columns:
+            peer_columns = [peer for peer in duplicate_group.columns if peer != column_name]
+            peer_text = ", ".join(peer_columns)
+            issues.append(
+                SchemaIssue(
+                    column_name=column_name,
+                    issue_type="duplicate_column_semantics",
+                    severity="medium",
+                    evidence=(
+                        f"Normalized schema name matches the peer column group '{duplicate_group.canonical_name}', "
+                        f"suggesting overlap with: {peer_text}."
+                    ),
+                    fix_confidence="medium",
+                    suggested_fix="",
+                    suggested_strategy=(
+                        f"Compare values, null patterns, and business usage with: {peer_text} before any merge or drop."
+                    ),
+                )
+            )
+
+    for column_name in local_facts.data_type_risk_columns:
+        issues.append(
+            SchemaIssue(
+                column_name=column_name,
+                issue_type="inferred_type_mismatch",
+                severity="medium",
+                evidence=local_facts.type_risk_rationales[column_name],
+                fix_confidence="medium",
+                suggested_fix="",
+                suggested_strategy="Verify the semantic expectation against sample values before attempting type cleaning.",
+            )
+        )
+
+    return issues
+
+
+schema_summary_agent = Agent(
     MODEL,
-    builtin_tools=[CodeExecutionTool()],
-    output_type=PromptedOutput(SchemaValidationReport),
+    output_type=PromptedOutput(SchemaSummaryOutput),
     retries=4,
+    model_settings={"temperature": 0},
     instructions=(
-        "You are the Schema Validator agent from the project orchestration. "
-        "Always use the code execution tool to inspect the attached CSV file. "
-        "Return valid JSON only that matches the SchemaValidationReport schema exactly. "
+        "You are the Schema Summary agent from the project orchestration. "
+        "Inspect the attached local schema facts document. "
+        "Return valid JSON only that matches the SchemaSummaryOutput schema exactly. "
         "Do not use markdown or ask follow-up questions. "
-        "Execute only the schema validation part of the project scope from Reply_projects.pdf. "
-        "Focus on column-name standards, naming convention violations, special characters, casing, reserved-word risk, "
-        "duplicate or overlapping column semantics, and obvious inferred data-type mismatches. "
-        "Be evidence-based and conservative. "
-        "Use this naming policy: valid names are lowercase snake_case identifiers; leading underscore is allowed for technical id columns; "
-        "names are invalid only if they contain spaces, hyphens, percent signs, uppercase letters, or start with a digit. "
-        "Do not mark already valid names like rata, ente, descrizione, spesa, or tipo_imposta as invalid. "
-        "Use duplicate_column_semantics only when two columns clearly represent the same business concept, not just because they are both textual. "
-        "Use inferred_type_mismatch only when the column name and the observed values strongly indicate a different semantic type, "
-        "for example a date/time column with free text, a numeric code column containing many non-code strings, or a monetary column containing non-numeric tokens. "
-        "Do not assume every object dtype should be numeric. IDs such as _id may legitimately be alphanumeric strings. "
-        "Inspect the full dataset, not just a head sample, before deciding. "
-        "For every issue, assign fix_confidence as high, medium, or low. "
-        "Only give a specific corrective action in suggested_fix when fix_confidence is high. "
-        "When confidence is medium or low, keep suggested_fix generic and use suggested_strategy to describe a safer approach, "
-        "such as profiling values, validating against source-system metadata, or normalizing with manual review."
+        "Execute only the schema-summary scope from Reply_projects.pdf. "
+        "Do not infer new facts and do not alter the provided findings. "
+        "Your only job is to write a short, precise downstream handoff summary for later validation or cleaning agents. "
+        "Use the provided local facts exactly as given. "
+        "Mention: how many safe naming fixes were identified, whether any duplicate-semantic groups need review, "
+        "and whether any genuine data-type contradictions need manual verification. "
+        "If there are no duplicate-semantic groups or no data-type risks, say that clearly. "
+        "Keep the summary concrete and grounded in the provided facts, not generic."
     ),
 )
 
@@ -148,99 +282,543 @@ completeness_analysis_agent = Agent(
     builtin_tools=[CodeExecutionTool()],
     output_type=PromptedOutput(CompletenessAnalysisReport),
     retries=4,
+    model_settings={"temperature": 0},
     instructions=(
         "You are the Completeness Analysis agent from the project orchestration. "
-        "Always use the code execution tool to inspect the attached CSV file. "
+        "Always use the code execution tool to inspect the attached completeness profile document. "
         "Return valid JSON only that matches the CompletenessAnalysisReport schema exactly. "
         "Do not use markdown or ask follow-up questions. "
         "Execute only the completeness-analysis scope from Reply_projects.pdf. "
-        "Compute completeness percentage per column and overall, count null-like and placeholder values, "
-        "identify placeholder tokens such as N/A, -, unknown, //, empty strings, and flag sparse columns that are almost entirely empty. "
-        "Be evidence-based and conservative."
+        "Use the provided per-column completeness percentages, missing-like counts, missing-like percentages, placeholder examples, "
+        "and overall completeness metrics from the attached document. "
+        "Identify columns with missing values, placeholder tokens such as N/A, -, unknown, and empty strings, and flag sparse columns that are almost entirely empty. "
+        "Be evidence-based and conservative. "
+        "Do not invent row-level details that are not present in the profile. "
+        "Set recommended_action to a concrete next step based on the evidence, not a generic label. "
+        "If completeness_pct is 100 and missing_like_count is 0, recommended_action must be exactly 'No action needed'. "
+        "If sparse_candidate is true, recommended_action should clearly say 'Investigate or consider removal due to sparsity'. "
+        "If placeholder examples are present, recommend standardizing placeholder tokens and reviewing upstream data entry. "
+        "If completeness is high but not perfect, recommend targeted review of missing or placeholder values in that column. "
+        "Do not leave recommended_action empty. "
+        "The summary should be a short downstream handoff in plain language: mention overall completeness, how many columns have missing values, "
+        "which columns are the main sparse or review targets, and whether placeholder normalization should be part of later cleaning."
     ),
 )
 
 
-consistency_validation_agent = Agent(
+format_consistency_agent = Agent(
+    MODEL,
+    output_type=PromptedOutput(ColumnConsistencyReport),
+    retries=4,
+    model_settings={"temperature": 0},
+    instructions=(
+        "You are the column-level Format Consistency agent from the project orchestration. "
+        "Inspect the attached local format facts document for one column. "
+        "Return valid JSON only that matches the ColumnConsistencyReport schema exactly. "
+        "Do not use markdown or ask follow-up questions. "
+        "Execute only the within-column format-consistency scope from Reply_projects.pdf. "
+        "Focus on whether the column mixes incompatible formats for identifiers, codes, periods, dates, timestamps, or monetary values. "
+        "Use the local facts as the authoritative evidence: semantic hint, dominant shape, dominant examples, inconsistent row count, and inconsistent example values. "
+        "Return finding=null when the column is internally consistent or when format consistency is not meaningfully applicable. "
+        "Do not flag descriptive, categorical, label, note, name, or free-text columns just because their values vary in content. "
+        "Do not treat missing or placeholder values as format inconsistencies by themselves; that belongs to completeness analysis. "
+        "Only report a format issue when machine_format_candidate is true, the dominant shape is clear, and inconsistent_rows is meaningfully greater than zero. "
+        "If machine_format_candidate is false, or the dominant shape is weak, return finding=null instead of inventing a rule. "
+        "When you do return a finding, include example_inconsistent_values using the provided inconsistent examples only. "
+        "Do not invent row-level details or unseen values. "
+        "Be conservative and evidence-based."
+    ),
+)
+
+
+column_cleaner_generator_agent = Agent(
     MODEL,
     builtin_tools=[CodeExecutionTool()],
-    output_type=PromptedOutput(ConsistencyValidationReport),
+    output_type=PromptedOutput(ColumnCleanerProgram),
     retries=4,
+    model_settings={"temperature": 0},
     instructions=(
-        "You are the Consistency Validation agent from the project orchestration. "
-        "Always use the code execution tool to inspect the attached CSV file. "
-        "Return valid JSON only that matches the ConsistencyValidationReport schema exactly. "
+        "You are the column cleaner generator agent from the project orchestration. "
+        "Always use the code execution tool to write and test a pure Python cleaning function from the attached request document. "
+        "Return valid JSON only that matches the ColumnCleanerProgram schema exactly. "
         "Do not use markdown or ask follow-up questions. "
-        "Execute only the consistency-validation scope from Reply_projects.pdf. "
-        "Focus on format consistency within columns, cross-column logical checks when they are actually applicable, "
-        "and exact plus near-duplicate detection. "
-        "Only report cross-column checks that make sense for the current dataset. "
-        "If a textbook example like birth_date versus age is not applicable here, say so through applicable=false and explain why. "
-        "For duplicate detection, use evidence from the real dataset and suggest a cautious strategy rather than deleting records blindly."
+        "Execute only the code-generation scope for one column. "
+        "The attached request document is the full specification: expected pattern, semantic hint, dominant valid examples, inconsistent examples, and the suggested normalization strategy. "
+        "Write exactly one deterministic cleaning function for a single cell value. "
+        "The function must be pure Python, side-effect free, self-contained, and must not require pandas or external files. "
+        "The function must accept raw scalar inputs such as strings, numbers, None, and pandas-style missing values. "
+        "If the input is missing, return None. "
+        "The function must preserve values that are already consistent. "
+        "Only normalize formats that are strongly supported by the provided examples and expected pattern. "
+        "Never rename the column, drop rows, or invent business values. "
+        "If a value cannot be normalized safely, preserve it unchanged and mention the ambiguity in residual_risks. "
+        "Use code execution to run the function on the provided dominant and inconsistent examples before you answer. "
+        "example_transformations must show the tested input-output pairs that justify the function. "
+        "python_code must define exactly one function whose name matches function_name. "
+        "If the function uses any import, helper constant, or helper function, include it inside python_code so the code is fully executable on its own."
     ),
 )
-
 setup_logfire()
 
 
-def attach_csv(path: Path) -> BinaryContent:
-    return BinaryContent(data=path.read_bytes(), media_type="text/csv")
+# Temporary Cached Files
+# Remove this section in the final version once the pipeline is stable.
 
+def build_validation_results(path: Path) -> OrchestrationStepResult:
+    validation_results = OrchestrationStepResult(
+        schema_validation=run_schema_validation(path),
+        completeness_analysis=run_completeness_analysis(path),
+        consistency_validation=run_consistency_validation(path),
+    )
+    save_validation_results(path, validation_results)
+    return validation_results
+
+
+def validation_cache_dir(path: Path) -> Path:
+    return path.parent / ".validation_cache"
+
+
+def validation_cache_paths(path: Path) -> dict[str, Path]:
+    cache_dir = validation_cache_dir(path)
+    stem = path.stem
+    return {
+        "schema": cache_dir / f"{stem}.schema.json",
+        "completeness": cache_dir / f"{stem}.completeness.json",
+        "consistency": cache_dir / f"{stem}.consistency.json",
+        "bundle": cache_dir / f"{stem}.validation_bundle.json",
+    }
+
+
+def save_validation_results(path: Path, validation_results: OrchestrationStepResult) -> None:
+    cache_dir = validation_cache_dir(path)
+    cache_dir.mkdir(exist_ok=True)
+    cache_paths = validation_cache_paths(path)
+
+    cache_paths["schema"].write_text(
+        validation_results.schema_validation.model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+    cache_paths["completeness"].write_text(
+        validation_results.completeness_analysis.model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+    cache_paths["consistency"].write_text(
+        validation_results.consistency_validation.model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+    cache_paths["bundle"].write_text(
+        validation_results.model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+
+
+def load_validation_results(path: Path) -> OrchestrationStepResult:
+    bundle_path = validation_cache_paths(path)["bundle"]
+    if not bundle_path.exists():
+        raise FileNotFoundError(f"Validation cache not found: {bundle_path}")
+    return OrchestrationStepResult.model_validate_json(bundle_path.read_text(encoding="utf-8"))
+
+
+# Validation Stages
 
 def run_schema_validation(path: Path) -> SchemaValidationReport:
+    df = load_dataset_frame(path)
+    profile = build_dataset_profile(df, path.stem)
+    local_facts = build_schema_local_facts(profile)
+    issues = build_schema_issues(local_facts)
     prompt = [
         (
-            f"Analyze the attached CSV dataset named {path.stem}. "
-            "Use Python in code execution to load it with pandas and inspect the real file. "
-            "This is step 1 of the orchestration only: Schema Validator. "
-            "Check column names against naming standards, identify naming convention problems, "
-            "flag special characters and reserved-word risks, identify duplicate semantic columns, "
-            "and flag columns whose observed values strongly suggest a different data type than the current representation."
+            f"Summarize the provided local schema facts for dataset {path.stem}. "
+            "This is the schema-summary handoff only. "
+            "Do not infer new findings. Summarize the provided findings for a later cleaner or validator."
         ),
-        attach_csv(path),
+        attach_profile_text(local_facts),
     ]
-    result = schema_validator_agent.run_sync(prompt)
-    return result.output
+    result = run_agent_with_backoff(schema_summary_agent, prompt)
+    return SchemaValidationReport(
+        dataset_name=local_facts.dataset_name,
+        total_rows=local_facts.total_rows,
+        total_columns=local_facts.total_columns,
+        column_names=local_facts.column_names,
+        invalid_naming_columns=local_facts.invalid_naming_columns,
+        data_type_risk_columns=local_facts.data_type_risk_columns,
+        duplicate_semantic_columns=local_facts.duplicate_semantic_columns,
+        issues=issues,
+        summary=result.output.summary,
+    )
 
 
 def run_completeness_analysis(path: Path) -> CompletenessAnalysisReport:
+    df = load_dataset_frame(path)
+    profile = build_completeness_profile(df, path.stem)
     prompt = [
         (
-            f"Analyze the attached CSV dataset named {path.stem}. "
-            "Use Python in code execution to load it with pandas and inspect the real file. "
+            f"Analyze the attached completeness profile for dataset {path.stem}. "
+            "Use Python in code execution to inspect the profile document. "
             "This is step 2 of the orchestration only: Completeness Analysis. "
-            "Compute completeness percentage per column and overall, count null, empty, and placeholder values, "
-            "identify the actual placeholder tokens present in the dataset, and flag sparse columns that may be candidates for removal or investigation."
+            "Use the provided metrics to summarize per-column completeness, detect missing-like and placeholder values, "
+            "identify actual placeholder tokens present in the dataset, and flag sparse columns that may be candidates for removal or investigation."
         ),
-        attach_csv(path),
+        attach_profile_text(profile),
     ]
-    result = completeness_analysis_agent.run_sync(prompt)
+    result = run_agent_with_backoff(completeness_analysis_agent, prompt)
     return result.output
+
+
+def run_format_consistency_validation(path: Path) -> ConsistencyValidationReport:
+    df = load_dataset_frame(path)
+    format_findings: list[FormatConsistencyFinding] = []
+
+    for column_name in df.columns:
+        result = run_column_format_check(df, column_name, path.stem, "original validation")
+        if result.finding is not None:
+            format_findings.append(result.finding)
+
+    return ConsistencyValidationReport(
+        dataset_name=path.stem,
+        total_rows=len(df),
+        format_consistency_findings=format_findings,
+        summary=(
+            f"Analyzed all {len(df.columns)} columns individually for format consistency and "
+            f"detected {len(format_findings)} format issues."
+        ),
+    )
+
+
+def run_column_format_check(
+    df: pd.DataFrame,
+    column_name: str,
+    dataset_name: str,
+    context_label: str,
+) -> ColumnConsistencyReport:
+    format_facts = build_column_format_facts(df, column_name)
+    if not format_facts.machine_format_candidate or format_facts.inconsistent_rows <= 0:
+        return ColumnConsistencyReport(
+            finding=None,
+            summary=(
+                f"No actionable machine-format inconsistency detected for column '{column_name}' "
+                f"in {context_label}."
+            ),
+        )
+    prompt = [
+        (
+            f"Analyze the attached local format facts for dataset {dataset_name}. "
+            f"Column name: {column_name}. "
+            f"Evaluation context: {context_label}. "
+            f"Total rows in the full dataset: {len(df)}. "
+            "Check whether the column mixes incompatible formats internally. "
+            "Return finding=null if the column is consistent or if format consistency is not meaningfully applicable."
+        ),
+        attach_profile_text(format_facts),
+    ]
+    result = run_agent_with_backoff(format_consistency_agent, prompt)
+    output = result.output
+    if output.finding is not None and output.finding.inconsistent_rows <= 0:
+        return ColumnConsistencyReport(
+            finding=None,
+            summary=output.summary,
+        )
+    return output
 
 
 def run_consistency_validation(path: Path) -> ConsistencyValidationReport:
+    return run_format_consistency_validation(path)
+
+
+# Cleaning Stage
+
+def cleaning_cache_dir(path: Path) -> Path:
+    return path.parent / ".cleaning_cache" / path.stem
+
+
+def generated_cleaner_path(path: Path, column_name: str) -> Path:
+    return cleaning_cache_dir(path) / "generated_cleaners" / f"{normalized_schema_name(column_name)}.py"
+
+
+def cleaned_dataset_path(path: Path) -> Path:
+    return cleaning_cache_dir(path) / f"{path.stem}.cleaned.csv"
+
+
+def build_column_cleaning_request(
+    dataset_name: str,
+    column_name: str,
+    finding: FormatConsistencyFinding,
+    format_facts,
+) -> ColumnCleaningRequest:
+    return ColumnCleaningRequest(
+        dataset_name=dataset_name,
+        column_name=column_name,
+        expected_pattern=finding.expected_pattern,
+        semantic_hint=format_facts.semantic_hint,
+        dominant_shape=format_facts.dominant_shape,
+        dominant_example_values=format_facts.dominant_example_values,
+        example_inconsistent_values=finding.example_inconsistent_values,
+        suggested_strategy=finding.suggested_strategy,
+    )
+
+
+def save_generated_cleaner(path: Path, program: ColumnCleanerProgram) -> Path:
+    code_path = generated_cleaner_path(path, program.column_name)
+    code_path.parent.mkdir(parents=True, exist_ok=True)
+    code_path.write_text(program.python_code.strip() + "\n", encoding="utf-8")
+    return code_path
+
+
+def _normalize_scalar_for_comparison(value: Any) -> str | None:
+    if pd.isna(value):
+        return None
+    return str(value)
+
+
+def load_cleaner_callable(program: ColumnCleanerProgram):
+    namespace: dict[str, Any] = {}
+    exec(program.python_code, namespace)
+    cleaner = namespace.get(program.function_name)
+    if not callable(cleaner):
+        raise ValueError(
+            f"Generated cleaner for column '{program.column_name}' did not define callable '{program.function_name}'."
+        )
+    return cleaner
+
+
+def build_local_execution_report(
+    series: pd.Series,
+    program: ColumnCleanerProgram,
+    request: ColumnCleaningRequest,
+) -> tuple[ColumnCleanerExecutionReport, pd.Series | None]:
+    try:
+        cleaner = load_cleaner_callable(program)
+    except Exception as error:
+        return (
+            ColumnCleanerExecutionReport(
+                column_name=program.column_name,
+                function_name=program.function_name,
+                execution_ok=False,
+                changed_rows=0,
+                sample_updates=[],
+                unresolved_risks=[f"Cleaner code failed to load locally: {error}"],
+                summary="Local preflight failed while loading the generated cleaner code.",
+            ),
+            None,
+        )
+
+    sample_values: list[Any] = []
+    for value in request.dominant_example_values + request.example_inconsistent_values:
+        if value not in sample_values:
+            sample_values.append(value)
+    for transformation in program.example_transformations:
+        if transformation.original_value not in sample_values:
+            sample_values.append(transformation.original_value)
+
+    try:
+        for value in sample_values:
+            cleaner(value)
+    except Exception as error:
+        return (
+            ColumnCleanerExecutionReport(
+                column_name=program.column_name,
+                function_name=program.function_name,
+                execution_ok=False,
+                changed_rows=0,
+                sample_updates=[],
+                unresolved_risks=[f"Cleaner code failed local preflight on sample values: {error}"],
+                summary="Local preflight failed while testing the generated cleaner on sample values.",
+            ),
+            None,
+        )
+
+    cleaned = series.astype("object").copy()
+    sample_updates: list[CellUpdate] = []
+    changed_rows = 0
+
+    try:
+        for row_index, original_value in series.items():
+            cleaned_value = cleaner(original_value)
+            normalized_original = _normalize_scalar_for_comparison(original_value)
+            normalized_cleaned = _normalize_scalar_for_comparison(cleaned_value)
+
+            if normalized_original != normalized_cleaned:
+                changed_rows += 1
+                if len(sample_updates) < 10:
+                    sample_updates.append(
+                        CellUpdate(
+                            row_index=int(row_index),
+                            old_value=normalized_original,
+                            new_value=normalized_cleaned,
+                        )
+                    )
+
+            cleaned.at[row_index] = pd.NA if normalized_cleaned is None else normalized_cleaned
+    except Exception as error:
+        return (
+            ColumnCleanerExecutionReport(
+                column_name=program.column_name,
+                function_name=program.function_name,
+                execution_ok=False,
+                changed_rows=0,
+                sample_updates=sample_updates,
+                unresolved_risks=[f"Cleaner code failed during full local execution: {error}"],
+                summary="Local execution failed while applying the generated cleaner to the full column.",
+            ),
+            None,
+        )
+
+    summary = (
+        "Local preflight succeeded and the generated cleaner was applied to the full column."
+        if changed_rows > 0
+        else "Local preflight succeeded and the generated cleaner made no changes."
+    )
+    return (
+        ColumnCleanerExecutionReport(
+            column_name=program.column_name,
+            function_name=program.function_name,
+            execution_ok=True,
+            changed_rows=changed_rows,
+            sample_updates=sample_updates,
+            unresolved_risks=[],
+            summary=summary,
+        ),
+        cleaned,
+    )
+
+
+def run_column_cleaner_program(
+    dataset_name: str,
+    request: ColumnCleaningRequest,
+) -> ColumnCleanerProgram:
     prompt = [
         (
-            f"Analyze the attached CSV dataset named {path.stem}. "
-            "Use Python in code execution to load it with pandas and inspect the real file. "
-            "This is step 3 of the orchestration only: Consistency Validation. "
-            "Check format consistency inside columns, especially code, period, date, timestamp, and monetary fields. "
-            "Run cross-column checks only when a real logical relationship exists in this dataset. "
-            "Detect exact duplicates and also near-duplicates using sensible business keys when possible."
+            f"Generate and verify a pure Python cleaning function for dataset {dataset_name}, column {request.column_name}. "
+            "Use the request document only. "
+            "Verify the function against the example values before answering."
         ),
-        attach_csv(path),
+        attach_profile_text(request),
     ]
-    result = consistency_validation_agent.run_sync(prompt)
-    return result.output
+    return run_agent_with_backoff(column_cleaner_generator_agent, prompt).output
 
+def run_cleaning(
+    path: Path,
+    validation_results: OrchestrationStepResult | None = None,
+    reuse_saved_validation: bool = False,
+) -> CleaningPipelineResult:
+    if validation_results is None:
+        if reuse_saved_validation:
+            try:
+                validation_results = load_validation_results(path)
+            except FileNotFoundError:
+                validation_results = build_validation_results(path)
+        else:
+            validation_results = build_validation_results(path)
+
+    df = load_dataset_frame(path)
+    rows_before = len(df)
+    columns_before = len(df.columns)
+
+    cleaning_requests: list[ColumnCleaningRequest] = []
+    generated_programs: list[ColumnCleanerProgram] = []
+    execution_reports: list[ColumnCleanerExecutionReport] = []
+    generated_cleaners: list[GeneratedCleanerArtifact] = []
+    unresolved_risks: list[str] = []
+
+    for finding in validation_results.consistency_validation.format_consistency_findings:
+        column_name = finding.column_name
+        format_facts = build_column_format_facts(df, column_name)
+        request = build_column_cleaning_request(path.stem, column_name, finding, format_facts)
+        cleaning_requests.append(request)
+
+        print(f"running cleaner generator for '{column_name}'...", file=os.sys.stderr)
+        program = run_column_cleaner_program(path.stem, request)
+        generated_programs.append(program)
+        code_path = save_generated_cleaner(path, program)
+
+        print(f"running local cleaner execution for '{column_name}'...", file=os.sys.stderr)
+        execution_report, cleaned_series = build_local_execution_report(df[column_name], program, request)
+        execution_reports.append(execution_report)
+
+        column_risks = [
+            f"{column_name}: {risk}"
+            for risk in [*program.residual_risks, *execution_report.unresolved_risks]
+            if risk
+        ]
+        unresolved_risks.extend(column_risks)
+
+        changed_rows = execution_report.changed_rows
+        if execution_report.execution_ok and cleaned_series is not None:
+            df[column_name] = cleaned_series
+        else:
+            unresolved_risks.append(
+                f"{column_name}: local preflight/execution failed, so the generated cleaner was not applied."
+            )
+
+        generated_cleaners.append(
+            GeneratedCleanerArtifact(
+                column_name=column_name,
+                function_name=program.function_name,
+                code_path=str(code_path),
+                changed_rows=changed_rows,
+                summary=execution_report.summary,
+            )
+        )
+
+    output_dir = cleaning_cache_dir(path)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    cleaned_path = cleaned_dataset_path(path)
+    df.to_csv(cleaned_path, index=False)
+
+    cleaning_report = CleaningReport(
+        dataset_name=path.stem,
+        rows_before=rows_before,
+        rows_after=len(df),
+        columns_before=columns_before,
+        columns_after=len(df.columns),
+        generated_cleaners=generated_cleaners,
+        unresolved_risks=unresolved_risks,
+        cleaned_csv_gzip_base64=gzip_text_to_base64(df.to_csv(index=False)),
+        summary=(
+            f"Generated and verified {len(generated_programs)} column cleaners from format findings. "
+            f"Saved the cleaned dataset to {cleaned_path} and stored per-column cleaner code under "
+            f"{output_dir / 'generated_cleaners'}."
+        ),
+    )
+
+    return CleaningPipelineResult(
+        dataset_name=path.stem,
+        source_path=str(path),
+        cleaned_path=str(cleaned_path),
+        validation_results=validation_results,
+        cleaning_requests=cleaning_requests,
+        generated_programs=generated_programs,
+        execution_reports=execution_reports,
+        cleaning_report=cleaning_report,
+    )
+
+
+# CLI
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run the schema-validator stage on a real CSV dataset.")
+    parser = argparse.ArgumentParser(description="Run the Pydantic AI dataset validation agents.")
     parser.add_argument(
         "dataset",
         nargs="?",
         default="spesa.csv",
         help="CSV file to inspect. Defaults to spesa.csv.",
+    )
+    parser.add_argument(
+        "--stage",
+        choices=["all", "schema", "completeness", "consistency", "clean"],
+        default="all",
+        help="Which top-level stage to run. Defaults to all.",
+    )
+    parser.add_argument(
+        "--consistency-agent",
+        choices=["all", "format"],
+        default="all",
+        help="When --stage consistency is used, choose which consistency sub-agent to run. Defaults to all.",
+    )
+    parser.add_argument(
+        "--reuse-validation",
+        action="store_true",
+        help="Reuse saved validation results from .validation_cache when running the cleaning stage.",
     )
     args = parser.parse_args()
 
@@ -248,11 +826,20 @@ def main() -> None:
     if not dataset_path.exists():
         raise SystemExit(f"Dataset not found: {dataset_path}")
 
-    result = OrchestrationStepResult(
-        schema_validation=run_schema_validation(dataset_path),
-        completeness_analysis=run_completeness_analysis(dataset_path),
-        consistency_validation=run_consistency_validation(dataset_path),
-    )
+    if args.stage == "schema":
+        result = run_schema_validation(dataset_path)
+    elif args.stage == "completeness":
+        result = run_completeness_analysis(dataset_path)
+    elif args.stage == "consistency":
+        if args.consistency_agent == "format":
+            result = run_format_consistency_validation(dataset_path)
+        else:
+            result = run_consistency_validation(dataset_path)
+    elif args.stage == "clean":
+        result = run_cleaning(dataset_path, reuse_saved_validation=args.reuse_validation)
+    else:
+        result = build_validation_results(dataset_path)
+
     print(json.dumps(result.model_dump(), ensure_ascii=False, indent=2))
 
 
