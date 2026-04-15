@@ -1,4 +1,4 @@
-from common_tools import (
+from tools.common_tools import (
     PLACEHOLDER_TOKENS,
     attach_profile_text,
     attach_single_column_csv,
@@ -14,7 +14,7 @@ from common_tools import (
     ungzip_base64_to_text,
     value_shape,
 )
-from completeness_tools import (
+from tools.completeness_tools import (
     CompletenessColumnProfile,
     CompletenessProfile,
     build_completeness_profile,
@@ -22,7 +22,7 @@ from completeness_tools import (
     detect_placeholder_values,
     sample_placeholder_examples,
 )
-from format_tools import (
+from tools.format_tools import (
     ColumnFormatFacts,
     ColumnFormatProfile,
     FormatOutlierExample,
@@ -31,7 +31,7 @@ from format_tools import (
     build_column_format_profile,
     compute_top_value_shapes,
 )
-from schema_tools import (
+from tools.schema_tools import (
     ColumnProfile,
     DatasetProfile,
     SchemaDuplicateGroup,

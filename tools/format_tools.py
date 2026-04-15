@@ -4,7 +4,7 @@ from collections import Counter
 import re
 from pydantic import BaseModel, Field
 
-from common_tools import (
+from tools.common_tools import (
     PLACEHOLDER_TOKENS,
     compute_datetime_parse_pct,
     compute_empty_like_pct,
@@ -12,7 +12,7 @@ from common_tools import (
     sample_non_null_values,
     value_shape,
 )
-from schema_tools import normalized_schema_name
+from tools.schema_tools import normalized_schema_name
 
 
 # Format Data Models

@@ -9,7 +9,7 @@ import logfire
 import pandas as pd
 from pydantic import BaseModel, Field
 from pydantic_ai import Agent, CodeExecutionTool, PromptedOutput
-from tools import (
+from tools.tools import (
     attach_profile_text,
     build_column_format_facts,
     build_completeness_profile,
@@ -800,8 +800,8 @@ def main() -> None:
     parser.add_argument(
         "dataset",
         nargs="?",
-        default="spesa.csv",
-        help="CSV file to inspect. Defaults to spesa.csv.",
+        default="Data/spesa.csv",
+        help="CSV file to inspect. Defaults to Data/spesa.csv.",
     )
     parser.add_argument(
         "--stage",

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from common_tools import PLACEHOLDER_TOKENS
+from tools.common_tools import PLACEHOLDER_TOKENS
 
 
 # Completeness Data Models
