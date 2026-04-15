@@ -1,9 +1,6 @@
 from __future__ import annotations
-
 import re
-
 from pydantic import BaseModel, Field
-
 from tools.common_tools import (
     compute_datetime_parse_pct,
     compute_empty_like_pct,
@@ -11,84 +8,96 @@ from tools.common_tools import (
     sample_non_null_values,
 )
 
-# Schema Constants
-
+# Valid snake_case name: starts with a lowercase letter, followed by lowercase letters, digits, or underscores only.
 VALID_SCHEMA_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
-# Schema Data Models
+# --- Data Models ---
 
 class ColumnProfile(BaseModel):
+    """Statistical snapshot of a single column, computed once from the raw DataFrame.
+    Everything downstream — schema checks, completeness, format — derives from this."""
     column_name: str
-    pandas_dtype: str
-    non_null_rows: int = Field(ge=0)
-    distinct_non_null_values: int = Field(ge=0)
-    numeric_parse_pct: float = Field(ge=0, le=100)
-    datetime_parse_pct: float = Field(ge=0, le=100)
-    empty_like_pct: float = Field(ge=0, le=100)
-    sample_values: list[str] = Field(default_factory=list)
-
+    pandas_dtype: str                                    # Inferred dtype obtained from LLM call
+    non_null_rows: int = Field(ge=0)                     
+    distinct_non_null_values: int = Field(ge=0)          
+    numeric_parse_pct: float = Field(ge=0, le=100)       
+    datetime_parse_pct: float = Field(ge=0, le=100)     
+    empty_like_pct: float = Field(ge=0, le=100)          
+    sample_values: list[str] = Field(default_factory=list)  # small representative sample for LLM prompts
 
 class DatasetProfile(BaseModel):
+    """Full profile of a dataset: one ColumnProfile per column."""
     dataset_name: str
     total_rows: int = Field(ge=0)
     total_columns: int = Field(ge=0)
-    columns: list[ColumnProfile] = Field(default_factory=list)
-
+    columns_profiles: list[ColumnProfile] = Field(default_factory=list)
 
 class SchemaDuplicateGroup(BaseModel):
-    canonical_name: str
-    columns: list[str] = Field(default_factory=list)
-
+    """A group of columns that normalize to the same canonical name,
+    suggesting possible semantic overlap (e.g. 'Provincia Sede' and 'provincia_sede')."""
+    canonical_name: str                          # the shared normalized name
+    columns: list[str] = Field(default_factory=list)  # original column names in this group
 
 class SchemaLocalFacts(BaseModel):
+    """All schema-level facts derived deterministically from the dataset profile.
+    Passed to the LLM schema summary agent as a structured handoff document."""
     dataset_name: str
     total_rows: int = Field(ge=0)
     total_columns: int = Field(ge=0)
     column_names: list[str] = Field(default_factory=list)
-    invalid_naming_columns: list[str] = Field(default_factory=list)
-    rename_suggestions: dict[str, str] = Field(default_factory=dict)
-    naming_reasons: dict[str, str] = Field(default_factory=dict)
-    data_type_risk_columns: list[str] = Field(default_factory=list)
-    type_risk_rationales: dict[str, str] = Field(default_factory=dict)
-    duplicate_semantic_columns: list[str] = Field(default_factory=list)
+    invalid_naming_columns: list[str] = Field(default_factory=list)  # columns that fail the snake_case rule
+    rename_suggestions: dict[str, str] = Field(default_factory=dict) # column_name -> suggested fix
+    naming_reasons: dict[str, str] = Field(default_factory=dict)     # column_name -> human-readable violation reason
+    duplicate_semantic_columns: list[str] = Field(default_factory=list)  # flat list of all columns in any duplicate group
     duplicate_groups: list[SchemaDuplicateGroup] = Field(default_factory=list)
 
 
-# Schema Helpers
+# --- Naming Convention Helpers ---
 
 def is_valid_schema_name(name: str) -> bool:
+    """Return True if the column name follows the lowercase snake_case convention.
+    A leading underscore is allowed (e.g. '_internal'), but the rest must match."""
     if name.startswith("_"):
         body = name[1:]
         return bool(body) and bool(VALID_SCHEMA_NAME_RE.fullmatch(body))
     return bool(VALID_SCHEMA_NAME_RE.fullmatch(name))
 
-
 def normalized_schema_name(name: str) -> str:
-    normalized = re.sub(r"[^a-z0-9]+", "_", name.lower())
-    normalized = re.sub(r"_+", "_", normalized).strip("_")
-    return normalized or "column"
-
+    """Convert any column name to its canonical snake_case form.
+    Used both for rename suggestions and for duplicate detection:
+    'Provincia Sede' and 'provincia_sede' both normalize to 'provincia_sede'."""
+    normalized = re.sub(r"[^a-z0-9]+", "_", name.lower())  # replace invalid chars with _
+    normalized = re.sub(r"_+", "_", normalized).strip("_")  # collapse repeated _ and trim edges
+    return normalized or "column"                            # fallback if result is empty
 
 def suggest_schema_name(name: str) -> str:
+    """Produce a valid snake_case rename suggestion for an invalid column name.
+    Handles edge cases: leading digits are moved to the end ('3descrizione' -> 'descrizione_3'),
+    leading underscores are stripped, and any remaining invalid name gets a 'col_' prefix."""
     normalized = normalized_schema_name(name)
+
+    # Leading digit: move the numeric prefix to the end so the name starts with a letter
     if normalized[0].isdigit():
         match = re.match(r"(\d+)(.*)", normalized)
         if match:
             digits, remainder = match.groups()
             remainder = remainder.strip("_")
-            if remainder:
-                normalized = f"{remainder}_{digits}"
-            else:
-                normalized = f"col_{digits}"
+            normalized = f"{remainder}_{digits}" if remainder else f"col_{digits}"
+
+    # Strip any residual leading underscores
     if normalized.startswith("_"):
         normalized = normalized.lstrip("_") or "column"
+
+    # Last resort: prefix with col_ if still invalid
     if not is_valid_schema_name(normalized):
         normalized = f"col_{normalized}".strip("_")
+
     return normalized
 
-
 def naming_rule_reason(name: str) -> str:
+    """Build a human-readable explanation of why a column name is invalid.
+    Enumerates all violations found (uppercase, whitespace, hyphens, %, leading digit)."""
     reasons: list[str] = []
     if any(char.isupper() for char in name):
         reasons.append("uppercase letters")
@@ -100,6 +109,7 @@ def naming_rule_reason(name: str) -> str:
         reasons.append("a percent sign")
     if name and name[0].isdigit():
         reasons.append("a leading digit")
+
     if not reasons:
         return "Column name violates the lowercase snake_case naming rule."
     if len(reasons) == 1:
@@ -111,44 +121,47 @@ def naming_rule_reason(name: str) -> str:
     )
 
 
-def infer_type_risk_rationale(column: ColumnProfile) -> str | None:
-    normalized = normalized_schema_name(column.column_name)
-    tokens = set(normalized.split("_"))
-
-    is_code_like = bool({"id", "cod", "code"} & tokens)
-    is_temporal_like = bool(
-        {"date", "time", "timestamp", "datetime", "period", "month", "year", "rata", "aggregation"} & tokens
-    )
-    is_amount_like = bool(
-        {"spesa", "amount", "importo", "price", "prezzo", "cost", "costo", "total", "totale"} & tokens
-    )
-
-    if is_code_like:
-        return None
-    if is_temporal_like and column.datetime_parse_pct < 40 and column.distinct_non_null_values > 0:
-        return (
-            f"Column name suggests temporal data but datetime_parse_pct is only {column.datetime_parse_pct:.2f}%, "
-            "so the values may not align with the expected temporal meaning."
+# --- Profile Builders ---
+def build_dtype_inference_text(df, n_rows: int = 10) -> str:
+    """Serialize the dataset into a column-by-column text profile for the dtype inference agent.
+    Each line contains the column name, up to n_rows unique non-null sample values,
+    and the numeric/datetime parse percentages computed over the full column.
+    The parse percentages give the LLM statistical context about the whole column,
+    preventing dirty sample values from misleading the type inference."""
+    lines: list[str] = []
+    for column_name in df.columns:
+        series = df[column_name]
+        samples = (
+            series
+            .dropna()
+            .astype(str)
+            .str.strip()
+            .loc[lambda s: s != ""]
+            .drop_duplicates()
+            .head(n_rows)
+            .tolist()
         )
-    if is_amount_like and 0 < column.numeric_parse_pct < 60 and column.distinct_non_null_values > 0:
-        return (
-            f"Column name suggests an amount or total but numeric_parse_pct is only {column.numeric_parse_pct:.2f}%, "
-            "so the values may need review before numeric cleaning."
+        samples_text = ", ".join(f'"{v}"' for v in samples) if samples else "(no samples)"
+        num_pct = compute_numeric_parse_pct(series)
+        dt_pct = compute_datetime_parse_pct(series)
+        lines.append(
+            f"{column_name}: {samples_text} "
+            f"[numeric_parse_pct={num_pct:.1f}%, datetime_parse_pct={dt_pct:.1f}%]"
         )
-    return None
+    return "\n".join(lines)
 
-
-# Schema Profile Builders
-
-def build_dataset_profile(df, dataset_name: str) -> DatasetProfile:
+def build_dataset_profile(df, dataset_name: str, dtype_overrides: dict[str, str] | None = None) -> DatasetProfile:
+    """Build a DatasetProfile from a raw DataFrame.
+    If dtype_overrides is provided (from the LLM dtype inference agent),
+    those values replace the raw pandas dtype for the relevant columns."""
     return DatasetProfile(
         dataset_name=dataset_name,
         total_rows=len(df),
         total_columns=len(df.columns),
-        columns=[
+        columns_profiles=[
             ColumnProfile(
                 column_name=column_name,
-                pandas_dtype=str(df[column_name].dtype),
+                pandas_dtype=(dtype_overrides or {}).get(column_name, str(df[column_name].dtype)),
                 non_null_rows=int(df[column_name].notna().sum()),
                 distinct_non_null_values=int(df[column_name].nunique(dropna=True)),
                 numeric_parse_pct=compute_numeric_parse_pct(df[column_name]),
@@ -162,45 +175,48 @@ def build_dataset_profile(df, dataset_name: str) -> DatasetProfile:
 
 
 def build_schema_local_facts(profile: DatasetProfile) -> SchemaLocalFacts:
+    """Derive all schema-level facts from a DatasetProfile deterministically (no LLM).
+
+    Two checks are performed per column:
+    1. Naming convention: flag any column that fails the snake_case rule,
+       compute a rename suggestion and a human-readable violation reason.
+    2. Duplicate detection: normalize every column name and group columns that
+       share the same canonical form — these likely represent the same field."""
     invalid_naming_columns: list[str] = []
     rename_suggestions: dict[str, str] = {}
     naming_reasons: dict[str, str] = {}
-    data_type_risk_columns: list[str] = []
-    type_risk_rationales: dict[str, str] = {}
     duplicate_groups_by_name: dict[str, list[str]] = {}
 
-    for column in profile.columns:
+    for column in profile.columns_profiles:
         column_name = column.column_name
+
+        # --- Naming convention check ---
         if not is_valid_schema_name(column_name):
             invalid_naming_columns.append(column_name)
             rename_suggestions[column_name] = suggest_schema_name(column_name)
             naming_reasons[column_name] = naming_rule_reason(column_name)
 
-        risk_rationale = infer_type_risk_rationale(column)
-        if risk_rationale is not None:
-            data_type_risk_columns.append(column_name)
-            type_risk_rationales[column_name] = risk_rationale
-
+        # --- Duplicate detection: group by canonical (normalized) name ---
         canonical_name = normalized_schema_name(column_name)
         duplicate_groups_by_name.setdefault(canonical_name, []).append(column_name)
 
+    # Keep only groups with more than one column (actual duplicates)
     duplicate_groups = [
         SchemaDuplicateGroup(canonical_name=canonical_name, columns=columns)
         for canonical_name, columns in duplicate_groups_by_name.items()
         if len(columns) > 1
     ]
+    # Flat list for quick membership checks
     duplicate_semantic_columns = [column_name for group in duplicate_groups for column_name in group.columns]
 
     return SchemaLocalFacts(
         dataset_name=profile.dataset_name,
         total_rows=profile.total_rows,
         total_columns=profile.total_columns,
-        column_names=[column.column_name for column in profile.columns],
+        column_names=[column.column_name for column in profile.columns_profiles],
         invalid_naming_columns=invalid_naming_columns,
         rename_suggestions=rename_suggestions,
         naming_reasons=naming_reasons,
-        data_type_risk_columns=data_type_risk_columns,
-        type_risk_rationales=type_risk_rationales,
         duplicate_semantic_columns=duplicate_semantic_columns,
         duplicate_groups=duplicate_groups,
     )
