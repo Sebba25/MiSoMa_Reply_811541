@@ -64,6 +64,48 @@ class ColumnFormatFacts(BaseModel):
 
 # Format Helpers
 
+
+def select_outlier_examples(
+    values,
+    *,
+    exclude_shape: str | None = None,
+    max_shapes: int = 6,
+    max_per_shape: int = 3,
+    max_total: int = 15,
+) -> list[FormatOutlierExample]:
+    if len(values) == 0:
+        return []
+
+    value_counts = Counter(values)
+    shape_totals: dict[str, int] = {}
+    grouped_values: dict[str, list[tuple[str, int]]] = {}
+
+    for value, count in value_counts.items():
+        shape = value_shape(value)
+        if exclude_shape is not None and shape == exclude_shape:
+            continue
+        shape_totals[shape] = shape_totals.get(shape, 0) + count
+        grouped_values.setdefault(shape, []).append((value, count))
+
+    ranked_shapes = sorted(shape_totals.items(), key=lambda item: (-item[1], item[0]))
+    selected_shapes = [shape for shape, _ in ranked_shapes[:max_shapes]]
+
+    examples: list[FormatOutlierExample] = []
+    for shape in selected_shapes:
+        ranked_values = sorted(grouped_values[shape], key=lambda item: (-item[1], item[0]))
+        for value, count in ranked_values[:max_per_shape]:
+            examples.append(
+                FormatOutlierExample(
+                    value=value[:80],
+                    shape=shape,
+                    count=count,
+                )
+            )
+            if len(examples) >= max_total:
+                return examples
+
+    return examples
+
 def infer_format_semantic_hint(column_name: str) -> str:
     tokens = set(normalized_schema_name(column_name).split("_"))
     if {"id", "cod", "code"} & tokens:
@@ -150,24 +192,12 @@ def build_column_format_facts(df, column_name: str) -> ColumnFormatFacts:
             if len(dominant_example_values) >= 5:
                 break
 
-        inconsistent_examples: list[FormatOutlierExample] = []
-        seen_shapes: set[str] = set()
-        if not contaminated_values.empty:
-            value_counts = Counter(contaminated_values)
-            for value, count in value_counts.most_common():
-                shape = value_shape(value)
-                if shape in seen_shapes:
-                    continue
-                inconsistent_examples.append(
-                    FormatOutlierExample(
-                        value=value[:80],
-                        shape=shape,
-                        count=count,
-                    )
-                )
-                seen_shapes.add(shape)
-                if len(inconsistent_examples) >= 10:
-                    break
+        inconsistent_examples = select_outlier_examples(
+            contaminated_values,
+            max_shapes=4,
+            max_per_shape=4,
+            max_total=12,
+        )
 
         inconsistent_rows = len(contaminated_values)
         machine_format_candidate = inconsistent_rows > 0 and profile.numeric_parse_pct >= 80
@@ -205,25 +235,14 @@ def build_column_format_facts(df, column_name: str) -> ColumnFormatFacts:
 
     inconsistent_rows = len(rendered) - dominant_count
     inconsistent_examples: list[FormatOutlierExample] = []
-    seen_values: set[str] = set()
-    seen_shapes: set[str] = set()
     if inconsistent_rows > 0:
-        value_counts = Counter(rendered)
-        for value, count in value_counts.most_common():
-            shape = value_shape(value)
-            if shape == dominant_shape or value in seen_values or shape in seen_shapes:
-                continue
-            inconsistent_examples.append(
-                FormatOutlierExample(
-                    value=value[:80],
-                    shape=shape,
-                    count=count,
-                )
-            )
-            seen_values.add(value)
-            seen_shapes.add(shape)
-            if len(inconsistent_examples) >= 10:
-                break
+        inconsistent_examples = select_outlier_examples(
+            rendered,
+            exclude_shape=dominant_shape,
+            max_shapes=6,
+            max_per_shape=3,
+            max_total=15,
+        )
 
     if semantic_hint == "temporal_period":
         machine_format_candidate = (
