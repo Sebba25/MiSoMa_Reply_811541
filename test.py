@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import json
 import os
@@ -16,12 +18,14 @@ from tools.tools import (
     build_completeness_profile,
     build_dataset_profile,
     build_dtype_inference_text,
-    build_schema_local_facts,
     gzip_text_to_base64,
+    is_valid_schema_name,
     load_dataset_frame,
+    naming_rule_reason,
     normalized_schema_name,
     run_agent_with_backoff,
-    SchemaLocalFacts,
+    SchemaDuplicateGroup,
+    suggest_schema_name,
 )
 
 load_dotenv()
@@ -55,15 +59,36 @@ class SchemaIssue(BaseModel):
     )
 
 
-class SchemaValidationReport(BaseModel):
+class SchemaColumnEntry(BaseModel):
+    """All facts about one column: dtype inference, statistics, and naming check — merged into one place."""
+    name: str
+    pandas_dtype: str
+    numeric_role: NUMERIC_ROLE | None = None
+    string_role: STRING_ROLE | None = None
+    detected_pattern: str | None = None
+    rationale: str
+    non_null_rows: int = Field(ge=0)
+    distinct_non_null_values: int = Field(ge=0)
+    numeric_parse_pct: float = Field(ge=0, le=100)
+    datetime_parse_pct: float = Field(ge=0, le=100)
+    empty_like_pct: float = Field(ge=0, le=100)
+    sample_values: list[str] = Field(default_factory=list)
+    naming_valid: bool
+    rename_suggestion: str | None = None
+    naming_reason: str | None = None
+
+
+class SchemaHandoff(BaseModel):
+    """Complete schema analysis result. Column-centric: all dtype, statistical, and naming
+    facts per column are merged. Issues and duplicate groups are kept at the top level
+    for easy scanning by downstream fixing agents."""
     dataset_name: str
     total_rows: int = Field(ge=0)
     total_columns: int = Field(ge=0)
-    column_names: list[str] = Field(default_factory=list)
-    invalid_naming_columns: list[str] = Field(default_factory=list)
-    duplicate_semantic_columns: list[str] = Field(default_factory=list)
+    columns: list[SchemaColumnEntry] = Field(default_factory=list)
     issues: list[SchemaIssue] = Field(default_factory=list)
-    summary: str
+    duplicate_groups: list[SchemaDuplicateGroup] = Field(default_factory=list)
+    summary: str = ""
 
 
 class SchemaSummaryOutput(BaseModel):
@@ -233,7 +258,7 @@ class CleaningReport(BaseModel):
 
 
 class OrchestrationStepResult(BaseModel):
-    schema_validation: SchemaValidationReport
+    schema_validation: SchemaHandoff
     completeness_analysis: CompletenessAnalysisReport
     consistency_validation: ConsistencyValidationReport
 
@@ -249,29 +274,29 @@ class CleaningPipelineResult(BaseModel):
     cleaning_report: CleaningReport
 
 
-def build_schema_issues(local_facts: SchemaLocalFacts) -> list[SchemaIssue]:
+def build_schema_issues(
+    columns: list[SchemaColumnEntry],
+    duplicate_groups: list[SchemaDuplicateGroup],
+) -> list[SchemaIssue]:
     issues: list[SchemaIssue] = []
 
-    for column_name in local_facts.invalid_naming_columns:
-        suggested_fix = local_facts.rename_suggestions.get(column_name, "")
-        issues.append(
-            SchemaIssue(
-                column_name=column_name,
-                issue_type="naming_standard",
-                severity="high",
-                evidence=local_facts.naming_reasons.get(
-                    column_name,
-                    "Column name violates the lowercase snake_case naming rule.",
-                ),
-                fix_confidence="high",
-                suggested_fix=suggested_fix,
-                suggested_strategy=f"Safe local rename to '{suggested_fix}'.",
+    for col in columns:
+        if not col.naming_valid:
+            issues.append(
+                SchemaIssue(
+                    column_name=col.name,
+                    issue_type="naming_standard",
+                    severity="high",
+                    evidence=col.naming_reason or "Column name violates the lowercase snake_case naming rule.",
+                    fix_confidence="high",
+                    suggested_fix=col.rename_suggestion or "",
+                    suggested_strategy=f"Safe local rename to '{col.rename_suggestion}'.",
+                )
             )
-        )
 
-    for duplicate_group in local_facts.duplicate_groups:
-        for column_name in duplicate_group.columns:
-            peer_columns = [peer for peer in duplicate_group.columns if peer != column_name]
+    for group in duplicate_groups:
+        for column_name in group.columns:
+            peer_columns = [peer for peer in group.columns if peer != column_name]
             peer_text = ", ".join(peer_columns)
             issues.append(
                 SchemaIssue(
@@ -279,7 +304,7 @@ def build_schema_issues(local_facts: SchemaLocalFacts) -> list[SchemaIssue]:
                     issue_type="duplicate_column_semantics",
                     severity="medium",
                     evidence=(
-                        f"Normalized schema name matches the peer column group '{duplicate_group.canonical_name}', "
+                        f"Normalized schema name matches the peer column group '{group.canonical_name}', "
                         f"suggesting overlap with: {peer_text}."
                     ),
                     fix_confidence="medium",
@@ -444,18 +469,7 @@ column_cleaner_generator_agent = Agent(
 setup_logfire()
 
 
-# Temporary Cached Files
-# Remove this section in the final version once the pipeline is stable.
-
-def build_validation_results(path: Path) -> OrchestrationStepResult:
-    validation_results = OrchestrationStepResult(
-        schema_validation=run_schema_validation(path),
-        completeness_analysis=run_completeness_analysis(path),
-        consistency_validation=run_consistency_validation(path),
-    )
-    save_validation_results(path, validation_results)
-    return validation_results
-
+# Cache
 
 def validation_cache_dir(path: Path) -> Path:
     return path.parent / ".validation_cache"
@@ -465,22 +479,33 @@ def validation_cache_paths(path: Path) -> dict[str, Path]:
     cache_dir = validation_cache_dir(path)
     stem = path.stem
     return {
-        "schema": cache_dir / f"{stem}.schema.json",
+        "schema_handoff": cache_dir / f"{stem}.schema_handoff.json",
         "completeness": cache_dir / f"{stem}.completeness.json",
         "consistency": cache_dir / f"{stem}.consistency.json",
         "bundle": cache_dir / f"{stem}.validation_bundle.json",
     }
 
 
+def save_schema_handoff(path: Path, handoff: SchemaHandoff) -> None:
+    cache_dir = validation_cache_dir(path)
+    cache_dir.mkdir(exist_ok=True)
+    validation_cache_paths(path)["schema_handoff"].write_text(
+        handoff.model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+
+
+def load_schema_handoff(path: Path) -> SchemaHandoff:
+    cache_path = validation_cache_paths(path)["schema_handoff"]
+    if not cache_path.exists():
+        raise FileNotFoundError(f"Schema handoff cache not found: {cache_path}")
+    return SchemaHandoff.model_validate_json(cache_path.read_text(encoding="utf-8"))
+
+
 def save_validation_results(path: Path, validation_results: OrchestrationStepResult) -> None:
     cache_dir = validation_cache_dir(path)
     cache_dir.mkdir(exist_ok=True)
     cache_paths = validation_cache_paths(path)
-
-    cache_paths["schema"].write_text(
-        validation_results.schema_validation.model_dump_json(indent=2),
-        encoding="utf-8",
-    )
     cache_paths["completeness"].write_text(
         validation_results.completeness_analysis.model_dump_json(indent=2),
         encoding="utf-8",
@@ -502,6 +527,16 @@ def load_validation_results(path: Path) -> OrchestrationStepResult:
     return OrchestrationStepResult.model_validate_json(bundle_path.read_text(encoding="utf-8"))
 
 
+def build_validation_results(path: Path, reuse_schema: bool = False) -> OrchestrationStepResult:
+    validation_results = OrchestrationStepResult(
+        schema_validation=run_schema_validation(path, reuse_cache=reuse_schema),
+        completeness_analysis=run_completeness_analysis(path),
+        consistency_validation=run_consistency_validation(path),
+    )
+    save_validation_results(path, validation_results)
+    return validation_results
+
+
 # Validation Stages
 
 def run_dtype_inference(path: Path) -> DatasetDtypeInference:
@@ -515,32 +550,77 @@ def run_dtype_inference(path: Path) -> DatasetDtypeInference:
     return result.output
 
 
-def run_schema_validation(path: Path) -> SchemaValidationReport:
+def run_schema_validation(path: Path, reuse_cache: bool = False) -> SchemaHandoff:
+    if reuse_cache:
+        return load_schema_handoff(path)
+
     df = load_dataset_frame(path)
+
+    # LLM call 1: infer dtype, role, pattern, rationale per column
     dtype_inference = run_dtype_inference(path)
-    dtype_overrides = {col.column_name: col.pandas_dtype for col in dtype_inference.columns}
+    dtype_map = {col.column_name: col for col in dtype_inference.columns}
+    dtype_overrides = {name: col.pandas_dtype for name, col in dtype_map.items()}
+
+    # Statistical profile (non-null counts, parse pcts, sample values)
     profile = build_dataset_profile(df, path.stem, dtype_overrides=dtype_overrides)
-    local_facts = build_schema_local_facts(profile)
-    issues = build_schema_issues(local_facts)
-    prompt = [
+
+    # Duplicate detection: group columns that normalize to the same canonical name
+    duplicate_groups_by_name: dict[str, list[str]] = {}
+    for col_name in df.columns:
+        canonical = normalized_schema_name(col_name)
+        duplicate_groups_by_name.setdefault(canonical, []).append(col_name)
+    duplicate_groups = [
+        SchemaDuplicateGroup(canonical_name=cn, columns=cols)
+        for cn, cols in duplicate_groups_by_name.items()
+        if len(cols) > 1
+    ]
+
+    # Merge everything into one entry per column
+    columns: list[SchemaColumnEntry] = []
+    for col_profile in profile.columns_profiles:
+        name = col_profile.column_name
+        dtype_col = dtype_map.get(name)
+        naming_valid = is_valid_schema_name(name)
+        columns.append(SchemaColumnEntry(
+            name=name,
+            pandas_dtype=col_profile.pandas_dtype,
+            numeric_role=dtype_col.numeric_role if dtype_col else None,
+            string_role=dtype_col.string_role if dtype_col else None,
+            detected_pattern=dtype_col.detected_pattern if dtype_col else None,
+            rationale=dtype_col.rationale if dtype_col else "",
+            non_null_rows=col_profile.non_null_rows,
+            distinct_non_null_values=col_profile.distinct_non_null_values,
+            numeric_parse_pct=col_profile.numeric_parse_pct,
+            datetime_parse_pct=col_profile.datetime_parse_pct,
+            empty_like_pct=col_profile.empty_like_pct,
+            sample_values=col_profile.sample_values,
+            naming_valid=naming_valid,
+            rename_suggestion=suggest_schema_name(name) if not naming_valid else None,
+            naming_reason=naming_rule_reason(name) if not naming_valid else None,
+        ))
+
+    issues = build_schema_issues(columns, duplicate_groups)
+
+    # LLM call 2: summary agent receives the full handoff (minus summary)
+    handoff = SchemaHandoff(
+        dataset_name=path.stem,
+        total_rows=len(df),
+        total_columns=len(df.columns),
+        columns=columns,
+        issues=issues,
+        duplicate_groups=duplicate_groups,
+    )
+    result = run_agent_with_backoff(schema_summary_agent, [
         (
-            f"Summarize the provided local schema facts for dataset {path.stem}. "
-            "This is the schema-summary handoff only. "
+            f"Summarize the provided schema analysis for dataset {path.stem}. "
             "Do not infer new findings. Summarize the provided findings for a later cleaner or validator."
         ),
-        attach_profile_text(local_facts),
-    ]
-    result = run_agent_with_backoff(schema_summary_agent, prompt)
-    return SchemaValidationReport(
-        dataset_name=local_facts.dataset_name,
-        total_rows=local_facts.total_rows,
-        total_columns=local_facts.total_columns,
-        column_names=local_facts.column_names,
-        invalid_naming_columns=local_facts.invalid_naming_columns,
-        duplicate_semantic_columns=local_facts.duplicate_semantic_columns,
-        issues=issues,
-        summary=result.output.summary,
-    )
+        attach_profile_text(handoff),
+    ])
+    handoff = handoff.model_copy(update={"summary": result.output.summary})
+
+    save_schema_handoff(path, handoff)
+    return handoff
 
 
 def run_completeness_analysis(path: Path) -> CompletenessAnalysisReport:
@@ -911,6 +991,11 @@ def main() -> None:
         help="When --stage consistency is used, choose which consistency sub-agent to run. Defaults to all.",
     )
     parser.add_argument(
+        "--reuse-schema",
+        action="store_true",
+        help="Load schema run from .validation_cache instead of re-running dtype inference and schema agents.",
+    )
+    parser.add_argument(
         "--reuse-validation",
         action="store_true",
         help="Reuse saved validation results from .validation_cache when running the cleaning stage.",
@@ -936,7 +1021,7 @@ def main() -> None:
             print(f"{c.column_name:<{col_w}}  {c.pandas_dtype:<{dtype_w}}  {role:<{role_w}}  {pattern:<{pat_w}}  {c.rationale}")
         raise SystemExit(0)
     elif args.stage == "schema":
-        result = run_schema_validation(dataset_path)
+        result = run_schema_validation(dataset_path, reuse_cache=args.reuse_schema)
     elif args.stage == "completeness":
         result = run_completeness_analysis(dataset_path)
     elif args.stage == "consistency":
@@ -947,7 +1032,7 @@ def main() -> None:
     elif args.stage == "clean":
         result = run_cleaning(dataset_path, reuse_saved_validation=args.reuse_validation)
     else:
-        result = build_validation_results(dataset_path)
+        result = build_validation_results(dataset_path, reuse_schema=args.reuse_schema)
 
     print(json.dumps(result.model_dump(), ensure_ascii=False, indent=2))
 

@@ -1,0 +1,581 @@
+{
+  "dataset_name": "attivazioniCessazioni",
+  "total_rows": 20102,
+  "total_columns": 19,
+  "columns": [
+    {
+      "name": "_id",
+      "pandas_dtype": "string",
+      "numeric_role": null,
+      "string_role": "identifier",
+      "detected_pattern": null,
+      "rationale": "The values are unique identifiers that contain letters and numbers.",
+      "non_null_rows": 20102,
+      "distinct_non_null_values": 20012,
+      "numeric_parse_pct": 0.0,
+      "datetime_parse_pct": 0.0,
+      "empty_like_pct": 0.0,
+      "sample_values": [
+        "6852caf7205349164bebcd69",
+        "6852caff6555da0907a40857",
+        "6852caef205349164bea2a6e",
+        "6852cb029952cb647ef389e4",
+        "6852cae9205349164be90859"
+      ],
+      "naming_valid": true,
+      "rename_suggestion": null,
+      "naming_reason": null
+    },
+    {
+      "name": "mese",
+      "pandas_dtype": "Int64",
+      "numeric_role": "measure",
+      "string_role": null,
+      "detected_pattern": null,
+      "rationale": "The majority of values are numeric, indicating they represent whole numbers.",
+      "non_null_rows": 20102,
+      "distinct_non_null_values": 61,
+      "numeric_parse_pct": 97.17938513580738,
+      "datetime_parse_pct": 0.0,
+      "empty_like_pct": 0.0,
+      "sample_values": [
+        "11",
+        "7",
+        "8",
+        "4",
+        "6"
+      ],
+      "naming_valid": true,
+      "rename_suggestion": null,
+      "naming_reason": null
+    },
+    {
+      "name": "anno",
+      "pandas_dtype": "Int64",
+      "numeric_role": "measure",
+      "string_role": null,
+      "detected_pattern": null,
+      "rationale": "The majority of values are numeric, indicating they represent whole numbers.",
+      "non_null_rows": 20102,
+      "distinct_non_null_values": 10,
+      "numeric_parse_pct": 99.08466819221968,
+      "datetime_parse_pct": 0.0,
+      "empty_like_pct": 0.0,
+      "sample_values": [
+        "2023",
+        "2021",
+        "2024",
+        "23",
+        "2024."
+      ],
+      "naming_valid": true,
+      "rename_suggestion": null,
+      "naming_reason": null
+    },
+    {
+      "name": "codice_ente",
+      "pandas_dtype": "Int64",
+      "numeric_role": "code",
+      "string_role": null,
+      "detected_pattern": null,
+      "rationale": "The majority of values are numeric, indicating they represent whole numbers.",
+      "non_null_rows": 19840,
+      "distinct_non_null_values": 80,
+      "numeric_parse_pct": 98.28125,
+      "datetime_parse_pct": 0.0,
+      "empty_like_pct": 2.4425430305442246,
+      "sample_values": [
+        "19",
+        "2020",
+        "22",
+        "12",
+        "954"
+      ],
+      "naming_valid": true,
+      "rename_suggestion": null,
+      "naming_reason": null
+    },
+    {
+      "name": "descrizione_ente",
+      "pandas_dtype": "string",
+      "numeric_role": null,
+      "string_role": "free_text",
+      "detected_pattern": null,
+      "rationale": "The values are descriptive text and contain letters.",
+      "non_null_rows": 19537,
+      "distinct_non_null_values": 80,
+      "numeric_parse_pct": 0.0,
+      "datetime_parse_pct": 0.0,
+      "empty_like_pct": 4.929857725599443,
+      "sample_values": [
+        "MINISTERO UNIVERSITA' E RICERCA",
+        "MINISTERO DELL'INTERNO - DIPARTIMENTO DELLA P.S.",
+        "AGENZIA DELLE ENTRATE",
+        "MINISTERO DELL'INTERNO",
+        "ISPETTORATO NAZIONALE DEL LAVORO"
+      ],
+      "naming_valid": true,
+      "rename_suggestion": null,
+      "naming_reason": null
+    },
+    {
+      "name": "provincia_sede",
+      "pandas_dtype": "string",
+      "numeric_role": null,
+      "string_role": "identifier",
+      "detected_pattern": null,
+      "rationale": "The values are short codes representing provinces.",
+      "non_null_rows": 19313,
+      "distinct_non_null_values": 319,
+      "numeric_parse_pct": 0.005177859472893905,
+      "datetime_parse_pct": 0.0,
+      "empty_like_pct": 5.875037309720426,
+      "sample_values": [
+        "TO",
+        "BT",
+        "Aq",
+        "AQ",
+        "VR"
+      ],
+      "naming_valid": true,
+      "rename_suggestion": null,
+      "naming_reason": null
+    },
+    {
+      "name": "regione_sede",
+      "pandas_dtype": "Int64",
+      "numeric_role": "code",
+      "string_role": null,
+      "detected_pattern": null,
+      "rationale": "The majority of values are numeric, indicating they represent whole numbers.",
+      "non_null_rows": 19726,
+      "distinct_non_null_values": 30,
+      "numeric_parse_pct": 97.80999695832911,
+      "datetime_parse_pct": 0.0,
+      "empty_like_pct": 3.2583822505223363,
+      "sample_values": [
+        "01",
+        "15",
+        "12",
+        "04",
+        "14"
+      ],
+      "naming_valid": true,
+      "rename_suggestion": null,
+      "naming_reason": null
+    },
+    {
+      "name": "attivazioni",
+      "pandas_dtype": "Int64",
+      "numeric_role": "measure",
+      "string_role": null,
+      "detected_pattern": null,
+      "rationale": "The majority of values are numeric, indicating they represent whole numbers.",
+      "non_null_rows": 20102,
+      "distinct_non_null_values": 996,
+      "numeric_parse_pct": 97.00527310715353,
+      "datetime_parse_pct": 0.0,
+      "empty_like_pct": 0.9700527310715351,
+      "sample_values": [
+        "250",
+        "0",
+        "1",
+        "6",
+        "12"
+      ],
+      "naming_valid": true,
+      "rename_suggestion": null,
+      "naming_reason": null
+    },
+    {
+      "name": "cessazioni",
+      "pandas_dtype": "Int64",
+      "numeric_role": "measure",
+      "string_role": null,
+      "detected_pattern": null,
+      "rationale": "The majority of values are numeric, indicating they represent whole numbers.",
+      "non_null_rows": 20102,
+      "distinct_non_null_values": 1102,
+      "numeric_parse_pct": 97.01024773654363,
+      "datetime_parse_pct": 0.0,
+      "empty_like_pct": 0.9700527310715351,
+      "sample_values": [
+        "40",
+        "2",
+        "4",
+        "3",
+        "1"
+      ],
+      "naming_valid": true,
+      "rename_suggestion": null,
+      "naming_reason": null
+    },
+    {
+      "name": "RATA",
+      "pandas_dtype": "Int64",
+      "numeric_role": "code",
+      "string_role": null,
+      "detected_pattern": null,
+      "rationale": "The majority of values are numeric, indicating they represent whole numbers.",
+      "non_null_rows": 20102,
+      "distinct_non_null_values": 96,
+      "numeric_parse_pct": 96.01034722913143,
+      "datetime_parse_pct": 3.0743209630882498,
+      "empty_like_pct": 0.0,
+      "sample_values": [
+        "202311",
+        "202307",
+        "202308",
+        "202304",
+        "202306"
+      ],
+      "naming_valid": false,
+      "rename_suggestion": "rata",
+      "naming_reason": "Column name contains uppercase letters, which violates the lowercase snake_case naming rule."
+    },
+    {
+      "name": "aggregation-time",
+      "pandas_dtype": "datetime64[ns]",
+      "numeric_role": null,
+      "string_role": null,
+      "detected_pattern": null,
+      "rationale": "The majority of values can be parsed as date/time, indicating they represent timestamps.",
+      "non_null_rows": 20102,
+      "distinct_non_null_values": 6,
+      "numeric_parse_pct": 0.0,
+      "datetime_parse_pct": 96.78638941398866,
+      "empty_like_pct": 0.0,
+      "sample_values": [
+        "2025-06-18T16:15:20.148346",
+        "GIU 18 2025",
+        "18/06/2025",
+        "2025/06/18",
+        "18.06.2025"
+      ],
+      "naming_valid": false,
+      "rename_suggestion": "aggregation_time",
+      "naming_reason": "Column name contains a hyphen, which violates the lowercase snake_case naming rule."
+    },
+    {
+      "name": "qualifica",
+      "pandas_dtype": "string",
+      "numeric_role": null,
+      "string_role": "free_text",
+      "detected_pattern": null,
+      "rationale": "The values are descriptive text representing job titles.",
+      "non_null_rows": 15016,
+      "distinct_non_null_values": 4,
+      "numeric_parse_pct": 0.0,
+      "datetime_parse_pct": 0.0,
+      "empty_like_pct": 25.300965078101683,
+      "sample_values": [
+        "Operatore",
+        "Dirigente",
+        "Impiegato",
+        "Funzionario"
+      ],
+      "naming_valid": true,
+      "rename_suggestion": null,
+      "naming_reason": null
+    },
+    {
+      "name": "note",
+      "pandas_dtype": "string",
+      "numeric_role": null,
+      "string_role": "free_text",
+      "detected_pattern": null,
+      "rationale": "The values are descriptive text.",
+      "non_null_rows": 300,
+      "distinct_non_null_values": 4,
+      "numeric_parse_pct": 0.0,
+      "datetime_parse_pct": 0.0,
+      "empty_like_pct": 98.50761118296687,
+      "sample_values": [
+        "Verifica manuale",
+        "Dato stimato",
+        "Da riconciliare",
+        "Fonte secondaria"
+      ],
+      "naming_valid": true,
+      "rename_suggestion": null,
+      "naming_reason": null
+    },
+    {
+      "name": "fonte_dato",
+      "pandas_dtype": "string",
+      "numeric_role": null,
+      "string_role": "free_text",
+      "detected_pattern": null,
+      "rationale": "The values are descriptive text.",
+      "non_null_rows": 160,
+      "distinct_non_null_values": 1,
+      "numeric_parse_pct": 0.0,
+      "datetime_parse_pct": 0.0,
+      "empty_like_pct": 99.20405929758232,
+      "sample_values": [
+        "Sistema legacy"
+      ],
+      "naming_valid": true,
+      "rename_suggestion": null,
+      "naming_reason": null
+    },
+    {
+      "name": "Provincia Sede",
+      "pandas_dtype": "string",
+      "numeric_role": null,
+      "string_role": "identifier",
+      "detected_pattern": null,
+      "rationale": "The values are short codes representing provinces.",
+      "non_null_rows": 19735,
+      "distinct_non_null_values": 107,
+      "numeric_parse_pct": 0.0,
+      "datetime_parse_pct": 0.0,
+      "empty_like_pct": 1.8256889861705303,
+      "sample_values": [
+        "TO",
+        "BT",
+        "AQ",
+        "VR",
+        "SA"
+      ],
+      "naming_valid": false,
+      "rename_suggestion": "provincia_sede",
+      "naming_reason": "Column name contains uppercase letters, and whitespace, which violates the lowercase snake_case naming rule."
+    },
+    {
+      "name": "CODICE ENTE",
+      "pandas_dtype": "Int64",
+      "numeric_role": "code",
+      "string_role": null,
+      "detected_pattern": null,
+      "rationale": "The majority of values are numeric, indicating they represent whole numbers.",
+      "non_null_rows": 20102,
+      "distinct_non_null_values": 74,
+      "numeric_parse_pct": 100.0,
+      "datetime_parse_pct": 0.0,
+      "empty_like_pct": 0.0,
+      "sample_values": [
+        "19",
+        "2020",
+        "22",
+        "12",
+        "954"
+      ],
+      "naming_valid": false,
+      "rename_suggestion": "codice_ente",
+      "naming_reason": "Column name contains uppercase letters, and whitespace, which violates the lowercase snake_case naming rule."
+    },
+    {
+      "name": "3descrizione",
+      "pandas_dtype": "string",
+      "numeric_role": null,
+      "string_role": "free_text",
+      "detected_pattern": null,
+      "rationale": "The values are descriptive text.",
+      "non_null_rows": 20102,
+      "distinct_non_null_values": 74,
+      "numeric_parse_pct": 0.0,
+      "datetime_parse_pct": 0.0,
+      "empty_like_pct": 0.0,
+      "sample_values": [
+        "MINISTERO UNIVERSITA' E RICERCA",
+        "MINISTERO DELL'INTERNO - DIPARTIMENTO DELLA P.S.",
+        "AGENZIA DELLE ENTRATE",
+        "MINISTERO DELL'INTERNO",
+        "ISPETTORATO NAZIONALE DEL LAVORO"
+      ],
+      "naming_valid": false,
+      "rename_suggestion": "descrizione_3",
+      "naming_reason": "Column name contains a leading digit, which violates the lowercase snake_case naming rule."
+    },
+    {
+      "name": "regione%sede",
+      "pandas_dtype": "Int64",
+      "numeric_role": "code",
+      "string_role": null,
+      "detected_pattern": null,
+      "rationale": "The majority of values are numeric, indicating they represent whole numbers.",
+      "non_null_rows": 20102,
+      "distinct_non_null_values": 21,
+      "numeric_parse_pct": 100.0,
+      "datetime_parse_pct": 0.0,
+      "empty_like_pct": 0.0,
+      "sample_values": [
+        "1",
+        "15",
+        "12",
+        "4",
+        "14"
+      ],
+      "naming_valid": false,
+      "rename_suggestion": "regione_sede",
+      "naming_reason": "Column name contains a percent sign, which violates the lowercase snake_case naming rule."
+    },
+    {
+      "name": "att ivazioni",
+      "pandas_dtype": "Int64",
+      "numeric_role": "measure",
+      "string_role": null,
+      "detected_pattern": null,
+      "rationale": "The majority of values are numeric, indicating they represent whole numbers.",
+      "non_null_rows": 20102,
+      "distinct_non_null_values": 989,
+      "numeric_parse_pct": 97.00029847776341,
+      "datetime_parse_pct": 0.0,
+      "empty_like_pct": 0.9700527310715351,
+      "sample_values": [
+        "250",
+        "0",
+        "1",
+        "6",
+        "12"
+      ],
+      "naming_valid": false,
+      "rename_suggestion": "att_ivazioni",
+      "naming_reason": "Column name contains whitespace, which violates the lowercase snake_case naming rule."
+    }
+  ],
+  "issues": [
+    {
+      "column_name": "RATA",
+      "issue_type": "naming_standard",
+      "severity": "high",
+      "evidence": "Column name contains uppercase letters, which violates the lowercase snake_case naming rule.",
+      "fix_confidence": "high",
+      "suggested_fix": "rata",
+      "suggested_strategy": "Safe local rename to 'rata'."
+    },
+    {
+      "column_name": "aggregation-time",
+      "issue_type": "naming_standard",
+      "severity": "high",
+      "evidence": "Column name contains a hyphen, which violates the lowercase snake_case naming rule.",
+      "fix_confidence": "high",
+      "suggested_fix": "aggregation_time",
+      "suggested_strategy": "Safe local rename to 'aggregation_time'."
+    },
+    {
+      "column_name": "Provincia Sede",
+      "issue_type": "naming_standard",
+      "severity": "high",
+      "evidence": "Column name contains uppercase letters, and whitespace, which violates the lowercase snake_case naming rule.",
+      "fix_confidence": "high",
+      "suggested_fix": "provincia_sede",
+      "suggested_strategy": "Safe local rename to 'provincia_sede'."
+    },
+    {
+      "column_name": "CODICE ENTE",
+      "issue_type": "naming_standard",
+      "severity": "high",
+      "evidence": "Column name contains uppercase letters, and whitespace, which violates the lowercase snake_case naming rule.",
+      "fix_confidence": "high",
+      "suggested_fix": "codice_ente",
+      "suggested_strategy": "Safe local rename to 'codice_ente'."
+    },
+    {
+      "column_name": "3descrizione",
+      "issue_type": "naming_standard",
+      "severity": "high",
+      "evidence": "Column name contains a leading digit, which violates the lowercase snake_case naming rule.",
+      "fix_confidence": "high",
+      "suggested_fix": "descrizione_3",
+      "suggested_strategy": "Safe local rename to 'descrizione_3'."
+    },
+    {
+      "column_name": "regione%sede",
+      "issue_type": "naming_standard",
+      "severity": "high",
+      "evidence": "Column name contains a percent sign, which violates the lowercase snake_case naming rule.",
+      "fix_confidence": "high",
+      "suggested_fix": "regione_sede",
+      "suggested_strategy": "Safe local rename to 'regione_sede'."
+    },
+    {
+      "column_name": "att ivazioni",
+      "issue_type": "naming_standard",
+      "severity": "high",
+      "evidence": "Column name contains whitespace, which violates the lowercase snake_case naming rule.",
+      "fix_confidence": "high",
+      "suggested_fix": "att_ivazioni",
+      "suggested_strategy": "Safe local rename to 'att_ivazioni'."
+    },
+    {
+      "column_name": "codice_ente",
+      "issue_type": "duplicate_column_semantics",
+      "severity": "medium",
+      "evidence": "Normalized schema name matches the peer column group 'codice_ente', suggesting overlap with: CODICE ENTE.",
+      "fix_confidence": "medium",
+      "suggested_fix": "",
+      "suggested_strategy": "Compare values, null patterns, and business usage with: CODICE ENTE before any merge or drop."
+    },
+    {
+      "column_name": "CODICE ENTE",
+      "issue_type": "duplicate_column_semantics",
+      "severity": "medium",
+      "evidence": "Normalized schema name matches the peer column group 'codice_ente', suggesting overlap with: codice_ente.",
+      "fix_confidence": "medium",
+      "suggested_fix": "",
+      "suggested_strategy": "Compare values, null patterns, and business usage with: codice_ente before any merge or drop."
+    },
+    {
+      "column_name": "provincia_sede",
+      "issue_type": "duplicate_column_semantics",
+      "severity": "medium",
+      "evidence": "Normalized schema name matches the peer column group 'provincia_sede', suggesting overlap with: Provincia Sede.",
+      "fix_confidence": "medium",
+      "suggested_fix": "",
+      "suggested_strategy": "Compare values, null patterns, and business usage with: Provincia Sede before any merge or drop."
+    },
+    {
+      "column_name": "Provincia Sede",
+      "issue_type": "duplicate_column_semantics",
+      "severity": "medium",
+      "evidence": "Normalized schema name matches the peer column group 'provincia_sede', suggesting overlap with: provincia_sede.",
+      "fix_confidence": "medium",
+      "suggested_fix": "",
+      "suggested_strategy": "Compare values, null patterns, and business usage with: provincia_sede before any merge or drop."
+    },
+    {
+      "column_name": "regione_sede",
+      "issue_type": "duplicate_column_semantics",
+      "severity": "medium",
+      "evidence": "Normalized schema name matches the peer column group 'regione_sede', suggesting overlap with: regione%sede.",
+      "fix_confidence": "medium",
+      "suggested_fix": "",
+      "suggested_strategy": "Compare values, null patterns, and business usage with: regione%sede before any merge or drop."
+    },
+    {
+      "column_name": "regione%sede",
+      "issue_type": "duplicate_column_semantics",
+      "severity": "medium",
+      "evidence": "Normalized schema name matches the peer column group 'regione_sede', suggesting overlap with: regione_sede.",
+      "fix_confidence": "medium",
+      "suggested_fix": "",
+      "suggested_strategy": "Compare values, null patterns, and business usage with: regione_sede before any merge or drop."
+    }
+  ],
+  "duplicate_groups": [
+    {
+      "canonical_name": "codice_ente",
+      "columns": [
+        "codice_ente",
+        "CODICE ENTE"
+      ]
+    },
+    {
+      "canonical_name": "provincia_sede",
+      "columns": [
+        "provincia_sede",
+        "Provincia Sede"
+      ]
+    },
+    {
+      "canonical_name": "regione_sede",
+      "columns": [
+        "regione_sede",
+        "regione%sede"
+      ]
+    }
+  ],
+  "summary": "A total of 7 safe naming fixes were identified. There are duplicate-semantic groups that need review for 'codice_ente', 'provincia_sede', and 'regione_sede'. No genuine data-type contradictions need manual verification."
+}

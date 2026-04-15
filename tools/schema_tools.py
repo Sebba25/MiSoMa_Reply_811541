@@ -39,18 +39,6 @@ class SchemaDuplicateGroup(BaseModel):
     canonical_name: str                          # the shared normalized name
     columns: list[str] = Field(default_factory=list)  # original column names in this group
 
-class SchemaLocalFacts(BaseModel):
-    """All schema-level facts derived deterministically from the dataset profile.
-    Passed to the LLM schema summary agent as a structured handoff document."""
-    dataset_name: str
-    total_rows: int = Field(ge=0)
-    total_columns: int = Field(ge=0)
-    column_names: list[str] = Field(default_factory=list)
-    invalid_naming_columns: list[str] = Field(default_factory=list)  # columns that fail the snake_case rule
-    rename_suggestions: dict[str, str] = Field(default_factory=dict) # column_name -> suggested fix
-    naming_reasons: dict[str, str] = Field(default_factory=dict)     # column_name -> human-readable violation reason
-    duplicate_semantic_columns: list[str] = Field(default_factory=list)  # flat list of all columns in any duplicate group
-    duplicate_groups: list[SchemaDuplicateGroup] = Field(default_factory=list)
 
 
 # --- Naming Convention Helpers ---
@@ -174,49 +162,3 @@ def build_dataset_profile(df, dataset_name: str, dtype_overrides: dict[str, str]
     )
 
 
-def build_schema_local_facts(profile: DatasetProfile) -> SchemaLocalFacts:
-    """Derive all schema-level facts from a DatasetProfile deterministically (no LLM).
-
-    Two checks are performed per column:
-    1. Naming convention: flag any column that fails the snake_case rule,
-       compute a rename suggestion and a human-readable violation reason.
-    2. Duplicate detection: normalize every column name and group columns that
-       share the same canonical form — these likely represent the same field."""
-    invalid_naming_columns: list[str] = []
-    rename_suggestions: dict[str, str] = {}
-    naming_reasons: dict[str, str] = {}
-    duplicate_groups_by_name: dict[str, list[str]] = {}
-
-    for column in profile.columns_profiles:
-        column_name = column.column_name
-
-        # --- Naming convention check ---
-        if not is_valid_schema_name(column_name):
-            invalid_naming_columns.append(column_name)
-            rename_suggestions[column_name] = suggest_schema_name(column_name)
-            naming_reasons[column_name] = naming_rule_reason(column_name)
-
-        # --- Duplicate detection: group by canonical (normalized) name ---
-        canonical_name = normalized_schema_name(column_name)
-        duplicate_groups_by_name.setdefault(canonical_name, []).append(column_name)
-
-    # Keep only groups with more than one column (actual duplicates)
-    duplicate_groups = [
-        SchemaDuplicateGroup(canonical_name=canonical_name, columns=columns)
-        for canonical_name, columns in duplicate_groups_by_name.items()
-        if len(columns) > 1
-    ]
-    # Flat list for quick membership checks
-    duplicate_semantic_columns = [column_name for group in duplicate_groups for column_name in group.columns]
-
-    return SchemaLocalFacts(
-        dataset_name=profile.dataset_name,
-        total_rows=profile.total_rows,
-        total_columns=profile.total_columns,
-        column_names=[column.column_name for column in profile.columns_profiles],
-        invalid_naming_columns=invalid_naming_columns,
-        rename_suggestions=rename_suggestions,
-        naming_reasons=naming_reasons,
-        duplicate_semantic_columns=duplicate_semantic_columns,
-        duplicate_groups=duplicate_groups,
-    )

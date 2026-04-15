@@ -32,14 +32,10 @@ from tools.format_tools import (
     compute_top_value_shapes,
 )
 from tools.schema_tools import (
-    ColumnProfile,
-    DatasetProfile,
     SchemaDuplicateGroup,
-    SchemaLocalFacts,
     VALID_SCHEMA_NAME_RE,
     build_dataset_profile,
     build_dtype_inference_text,
-    build_schema_local_facts,
     is_valid_schema_name,
     naming_rule_reason,
     normalized_schema_name,
@@ -49,10 +45,7 @@ from tools.schema_tools import (
 __all__ = [
     "PLACEHOLDER_TOKENS",
     "VALID_SCHEMA_NAME_RE",
-    "ColumnProfile",
-    "DatasetProfile",
     "SchemaDuplicateGroup",
-    "SchemaLocalFacts",
     "CompletenessColumnProfile",
     "CompletenessProfile",
     "ValueShapeProfile",
@@ -67,7 +60,6 @@ __all__ = [
     "build_completeness_profile",
     "build_dataset_profile",
     "build_dtype_inference_text",
-    "build_schema_local_facts",
     "compute_datetime_parse_pct",
     "compute_empty_like_pct",
     "compute_missing_like_mask",
