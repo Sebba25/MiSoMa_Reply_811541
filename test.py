@@ -2,7 +2,7 @@ import argparse
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from dotenv import load_dotenv
 import logfire
@@ -11,9 +11,11 @@ from pydantic import BaseModel, Field
 from pydantic_ai import Agent, CodeExecutionTool, PromptedOutput
 from tools.tools import (
     attach_profile_text,
+    attach_text_document,
     build_column_format_facts,
     build_completeness_profile,
     build_dataset_profile,
+    build_dtype_inference_text,
     build_schema_local_facts,
     gzip_text_to_base64,
     load_dataset_frame,
@@ -29,7 +31,7 @@ MODEL = "openai-responses:gpt-4o-mini"
 
 def setup_logfire() -> None:
     logfire.configure(
-        send_to_logfire="if-token-present",
+        data_dir=Path(__file__).parent / ".logfire",
         service_name="pydantic-dataset-smoke-test",
         service_version="1.0.0",
         environment=os.getenv("LOGFIRE_ENVIRONMENT", "dev"),
@@ -59,7 +61,6 @@ class SchemaValidationReport(BaseModel):
     total_columns: int = Field(ge=0)
     column_names: list[str] = Field(default_factory=list)
     invalid_naming_columns: list[str] = Field(default_factory=list)
-    data_type_risk_columns: list[str] = Field(default_factory=list)
     duplicate_semantic_columns: list[str] = Field(default_factory=list)
     issues: list[SchemaIssue] = Field(default_factory=list)
     summary: str
@@ -67,6 +68,56 @@ class SchemaValidationReport(BaseModel):
 
 class SchemaSummaryOutput(BaseModel):
     summary: str
+
+
+VALID_PANDAS_DTYPE = Literal[
+    "Int64",
+    "Float64",
+    "datetime64[ns]",
+    "string",
+    "boolean",
+    "object",
+]
+
+NUMERIC_ROLE = Literal[
+    "measure",    # a real quantity used arithmetically (price, count, amount)
+    "code",       # a numeric identifier that must not be used arithmetically (CAP, commune code)
+    "indicator",  # a numeric flag or ordinal category (0/1, 1/2/3 for status)
+]
+
+STRING_ROLE = Literal[
+    "identifier",   # codes, IDs, fiscal codes — must be preserved exactly
+    "categorical",  # bounded low-cardinality values (status, region, gender)
+    "name",         # person or place names
+    "free_text",    # unstructured narrative text
+]
+
+
+class ColumnDtypeInference(BaseModel):
+    column_name: str
+    pandas_dtype: VALID_PANDAS_DTYPE
+    numeric_role: NUMERIC_ROLE | None = Field(
+        default=None,
+        description="Only set when pandas_dtype is Int64 or Float64.",
+    )
+    string_role: STRING_ROLE | None = Field(
+        default=None,
+        description="Only set when pandas_dtype is string.",
+    )
+    detected_pattern: str | None = Field(
+        default=None,
+        description=(
+            "Describe the dominant value format when a clear pattern is present. "
+            "Examples: 'YYYY-MM', 'DD/MM/YYYY', 'Italian decimal comma (1.234,56)', "
+            "'6-digit numeric code', 'ISO 3166-1 alpha-2 country code'. "
+            "Leave null when no consistent pattern is detectable."
+        ),
+    )
+    rationale: str
+
+
+class DatasetDtypeInference(BaseModel):
+    columns: list[ColumnDtypeInference]
 
 
 class CompletenessColumnFinding(BaseModel):
@@ -239,19 +290,6 @@ def build_schema_issues(local_facts: SchemaLocalFacts) -> list[SchemaIssue]:
                 )
             )
 
-    for column_name in local_facts.data_type_risk_columns:
-        issues.append(
-            SchemaIssue(
-                column_name=column_name,
-                issue_type="inferred_type_mismatch",
-                severity="medium",
-                evidence=local_facts.type_risk_rationales[column_name],
-                fix_confidence="medium",
-                suggested_fix="",
-                suggested_strategy="Verify the semantic expectation against sample values before attempting type cleaning.",
-            )
-        )
-
     return issues
 
 
@@ -273,6 +311,51 @@ schema_summary_agent = Agent(
         "and whether any genuine data-type contradictions need manual verification. "
         "If there are no duplicate-semantic groups or no data-type risks, say that clearly. "
         "Keep the summary concrete and grounded in the provided facts, not generic."
+    ),
+)
+
+
+dtype_inference_agent = Agent(
+    MODEL,
+    output_type=PromptedOutput(DatasetDtypeInference),
+    retries=4,
+    model_settings={"temperature": 0},
+    instructions=(
+        "You are a data type inference agent working on real-world dirty datasets. "
+        "You receive a column-by-column profile: the column name, a sample of its values, "
+        "and two statistics — numeric_parse_pct (% of values that parse as a number) "
+        "and datetime_parse_pct (% of values that parse as a date/time). "
+        "Your task is to infer what the physical pandas dtype WOULD BE if the column were clean. "
+        "Treat dirty values (placeholders, formatting noise, unit suffixes, mixed formats) as corruption, "
+        "not as evidence of the true type. Ask yourself: 'If this column were clean, what would it contain?'\n\n"
+        "Use the column name, the dominant pattern in the samples, and the parse percentages together. "
+        "A high numeric_parse_pct (above ~50%) is strong evidence the column should be numeric even if some samples look like strings. "
+        "A high datetime_parse_pct (above ~40%) is strong evidence the column should be datetime even if formats vary.\n\n"
+        "Choose the dtype from: Int64, Float64, datetime64[ns], string, boolean, object.\n\n"
+        "DTYPE RULES (physical, not logical):\n"
+        "- Int64: the column stores whole numbers when clean. Use this even if those numbers are codes or indicators.\n"
+        "- Float64: the column stores decimal numbers when clean. Use this even if those numbers are codes.\n"
+        "- datetime64[ns]: the column stores dates, times, or timestamps when clean, even if formats are inconsistent.\n"
+        "- string: the column stores text. Use for names, free text, and codes that contain letters. "
+        "Do NOT use string when numeric_parse_pct or datetime_parse_pct is high.\n"
+        "- boolean: the column stores true/false or yes/no values when clean.\n"
+        "- object: last resort only — when the column genuinely mixes incompatible types with no dominant pattern.\n\n"
+        "ROLE RULES:\n"
+        "- numeric_role: set only when dtype is Int64 or Float64.\n"
+        "  'measure' = a real quantity used arithmetically (price, count, amount).\n"
+        "  'code' = a numeric identifier not used arithmetically (postal code, region code, commune code).\n"
+        "  'indicator' = a numeric flag or ordinal (0/1 flag, 1/2/3 status encoding).\n"
+        "- string_role: set only when dtype is string.\n"
+        "  'identifier' = codes or IDs that must be preserved exactly (fiscal code, document number).\n"
+        "  'categorical' = bounded low-cardinality labels (status, region name, gender, type).\n"
+        "  'name' = person or place names.\n"
+        "  'free_text' = unstructured narrative or description.\n\n"
+        "PATTERN RULE:\n"
+        "- detected_pattern: describe the dominant clean value format when a repeating pattern is visible. "
+        "Examples: 'YYYY-MM', 'DD/MM/YYYY', 'Italian decimal comma (1.234,56)', '6-digit numeric code', "
+        "'2-letter province code (IT)', 'alphanumeric fiscal code (16 chars)'. "
+        "Set to null when no consistent pattern is detectable.\n\n"
+        "Return one entry per column in the same order as the input."
     ),
 )
 
@@ -421,9 +504,22 @@ def load_validation_results(path: Path) -> OrchestrationStepResult:
 
 # Validation Stages
 
+def run_dtype_inference(path: Path) -> DatasetDtypeInference:
+    df = load_dataset_frame(path)
+    text = build_dtype_inference_text(df)
+    prompt = [
+        "Infer the correct pandas dtype for each column based on the attached CSV sample.",
+        attach_text_document(text),
+    ]
+    result = run_agent_with_backoff(dtype_inference_agent, prompt)
+    return result.output
+
+
 def run_schema_validation(path: Path) -> SchemaValidationReport:
     df = load_dataset_frame(path)
-    profile = build_dataset_profile(df, path.stem)
+    dtype_inference = run_dtype_inference(path)
+    dtype_overrides = {col.column_name: col.pandas_dtype for col in dtype_inference.columns}
+    profile = build_dataset_profile(df, path.stem, dtype_overrides=dtype_overrides)
     local_facts = build_schema_local_facts(profile)
     issues = build_schema_issues(local_facts)
     prompt = [
@@ -441,7 +537,6 @@ def run_schema_validation(path: Path) -> SchemaValidationReport:
         total_columns=local_facts.total_columns,
         column_names=local_facts.column_names,
         invalid_naming_columns=local_facts.invalid_naming_columns,
-        data_type_risk_columns=local_facts.data_type_risk_columns,
         duplicate_semantic_columns=local_facts.duplicate_semantic_columns,
         issues=issues,
         summary=result.output.summary,
@@ -805,7 +900,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--stage",
-        choices=["all", "schema", "completeness", "consistency", "clean"],
+        choices=["all", "dtype", "schema", "completeness", "consistency", "clean"],
         default="all",
         help="Which top-level stage to run. Defaults to all.",
     )
@@ -826,7 +921,21 @@ def main() -> None:
     if not dataset_path.exists():
         raise SystemExit(f"Dataset not found: {dataset_path}")
 
-    if args.stage == "schema":
+    if args.stage == "dtype":
+        inference = run_dtype_inference(dataset_path)
+        col_w   = max(len(c.column_name)  for c in inference.columns)
+        dtype_w = max(len(c.pandas_dtype) for c in inference.columns)
+        role_w  = max(len(c.numeric_role or c.string_role or "") for c in inference.columns)
+        pat_w   = max(len(c.detected_pattern or "") for c in inference.columns)
+        header  = f"{'COLUMN':<{col_w}}  {'DTYPE':<{dtype_w}}  {'ROLE':<{role_w}}  {'PATTERN':<{pat_w}}  RATIONALE"
+        print(header)
+        print("-" * len(header))
+        for c in inference.columns:
+            role    = c.numeric_role or c.string_role or ""
+            pattern = c.detected_pattern or ""
+            print(f"{c.column_name:<{col_w}}  {c.pandas_dtype:<{dtype_w}}  {role:<{role_w}}  {pattern:<{pat_w}}  {c.rationale}")
+        raise SystemExit(0)
+    elif args.stage == "schema":
         result = run_schema_validation(dataset_path)
     elif args.stage == "completeness":
         result = run_completeness_analysis(dataset_path)
