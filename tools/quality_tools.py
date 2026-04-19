@@ -1,3 +1,8 @@
+"""Cross-column and dataset-wide quality checks: numeric outliers, rare
+categories, duplicate / near-duplicate columns and rows, semantic conflicts,
+and date-ordering rules. Consumed by the anomaly, cross-column and duplicate
+agents."""
+
 from __future__ import annotations
 
 from collections import Counter, defaultdict

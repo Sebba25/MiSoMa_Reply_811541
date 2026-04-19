@@ -1,3 +1,11 @@
+"""Applies remediation actions + generated cleaners to produce the cleaned CSV.
+
+Executes the remediation plan in order: column renames from schema,
+placeholder-to-null replacements from completeness, per-column cleaner
+programs, then the explicit dtype casts. Emits a ``CleaningReport`` with
+one ``ColumnCleanerExecutionReport`` per applied cleaner.
+"""
+
 from __future__ import annotations
 
 import sys

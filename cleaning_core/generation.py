@@ -1,3 +1,20 @@
+"""Generator / critic repair loop for per-column cleaning functions.
+
+The heart of the multi-agent cleaning pipeline. For each format-consistency
+finding we:
+
+1. Build a ``ColumnCleaningRequest`` bundle.
+2. Prompt ``column_cleaner_generator_agent`` for a self-contained cleaner.
+3. Validate the program host-side (``validate_generated_cleaner_program``).
+4. On failure, ask ``cleaner_repair_critic_agent`` for a diagnosis and feed
+   it back into the next generator attempt.
+5. Detect stagnation (same code or same validation fingerprint) and inject
+   a rewrite skeleton + bumped temperature to break deterministic loops.
+
+Public entry points: ``run_cleaner_generation`` (driver) and
+``run_column_cleaner_program`` (single-column loop).
+"""
+
 from __future__ import annotations
 
 import sys
@@ -14,7 +31,7 @@ from models import (
 )
 from pydantic_ai.usage import UsageLimits
 from pydantic_ai.exceptions import UsageLimitExceeded
-from pipeline import run_consistency_validation
+from pipeline import run_format_consistency_validation
 from tools.tools import (
     attach_profile_text,
     attach_text_document,
@@ -26,16 +43,11 @@ from tools.tools import (
 from .paths import cleaner_manifest_path, save_cleaner_manifest, save_generated_cleaner
 from .request import build_column_cleaning_request
 from .validation import (
-    build_validation_issue as _build_validation_issue,
-    detect_shadowed_delimiter_branches as _detect_shadowed_delimiter_branches,
-    dominant_output_shape as _dominant_output_shape,
-    format_validation_examples as _format_validation_examples,
-    format_validation_issue as _format_validation_issue,
-    is_parseable_output as _is_parseable_output,
-    rebuild_verified_program as _rebuild_verified_program,
-    requires_fixed_output_shape as _requires_fixed_output_shape,
-    validate_generated_cleaner_program as _validate_generated_cleaner_program,
-    validation_issue_fingerprint as _validation_issue_fingerprint,
+    format_validation_examples,
+    format_validation_issue,
+    rebuild_verified_program,
+    validate_generated_cleaner_program,
+    validation_issue_fingerprint,
 )
 
 
@@ -78,6 +90,70 @@ def run_cleaner_repair_critic(
     return run_agent_with_backoff(cleaner_repair_critic_agent, prompt).output
 
 
+def _build_stagnation_unblock_brief(request: ColumnCleaningRequest) -> str:
+    """Concrete rewrite skeleton injected when the generator is repeating itself.
+
+    Gives the model a non-negotiable structural template that puts canonical-value
+    preservation BEFORE any delimiter-based branching, and enforces mutually
+    exclusive branches so the shadowed-specific-branch check can never fire.
+    """
+    dominants = [v for v in request.dominant_example_values if isinstance(v, str) and v]
+    outliers = [v for v in request.example_inconsistent_values if isinstance(v, str) and v]
+    dominant_str = ", ".join(repr(v) for v in dominants[:6]) or "(no dominant examples)"
+    outlier_str = ", ".join(repr(v) for v in outliers[:6]) or "(no outliers)"
+
+    skeleton = (
+        "def clean_column(value):\n"
+        "    import re\n"
+        "    from datetime import datetime\n"
+        "    if value is None:\n"
+        "        return None\n"
+        "    s = str(value).strip()\n"
+        "    if not s:\n"
+        "        return None\n"
+        "\n"
+        "    # STEP 1 — CANONICAL GUARD. Build a structural regex from ONE dominant example\n"
+        "    # and early-return if the input already matches. This MUST run before any\n"
+        "    # delimiter-based branching so already-valid values are never rewritten.\n"
+        "    canonical_examples = [" + ", ".join(repr(v) for v in dominants[:3]) + "]\n"
+        "    def _structural_regex(example):\n"
+        "        parts, cursor = [], 0\n"
+        "        for m in re.finditer(r'\\d+', example):\n"
+        "            a, b = m.span()\n"
+        "            if a > cursor: parts.append(re.escape(example[cursor:a]))\n"
+        "            parts.append(r'\\d{' + str(b - a) + '}')\n"
+        "            cursor = b\n"
+        "        if cursor < len(example): parts.append(re.escape(example[cursor:]))\n"
+        "        return re.compile('^' + ''.join(parts) + '$')\n"
+        "    canonical_patterns = [_structural_regex(e) for e in canonical_examples]\n"
+        "    if any(p.fullmatch(s) for p in canonical_patterns):\n"
+        "        return s\n"
+        "\n"
+        "    # STEP 2 — MUTUALLY EXCLUSIVE FORMAT BRANCHES. Order them MOST-specific first.\n"
+        "    # Never write `if '-' in s:` above a branch that also inspects '-' substructure.\n"
+        "    # Each branch must commit or fall through — no overlap.\n"
+        "    # (Implement outlier transformations here.)\n"
+        "\n"
+        "    return None\n"
+    )
+
+    return (
+        "STAGNATION OVERRIDE — your previous attempts repeated the same bug. "
+        "You MUST abandon the previous control flow and rewrite around this skeleton. "
+        "The structural canonical-guard (Step 1) is MANDATORY and MUST be the first logic after the None/empty check. "
+        "Every dominant example must fall through the guard and return unchanged. "
+        "Delimiter branches in Step 2 must be mutually exclusive — do not write a generic `if '<sep>' in s:` above any branch that re-inspects the same separator.\n\n"
+        f"Dominant examples (must be preserved EXACTLY): {dominant_str}\n"
+        f"Outlier examples (must be transformed): {outlier_str}\n\n"
+        f"Target dtype: {request.target_dtype}\n"
+        f"Expected pattern: {request.expected_pattern}\n\n"
+        "REQUIRED SKELETON (adapt the function name and Step 2 body, but keep Step 1 verbatim):\n"
+        "```python\n"
+        f"{skeleton}"
+        "```\n"
+    )
+
+
 def _build_cleaner_generation_prompt(
     dataset_name: str,
     request: ColumnCleaningRequest,
@@ -85,6 +161,7 @@ def _build_cleaner_generation_prompt(
     validation_issues: list[CleanerValidationIssue] | None = None,
     repair_diagnosis: CleanerRepairDiagnosis | None = None,
     attempt_number: int | None = None,
+    stagnation_detected: bool = False,
 ) -> list[object]:
     prompt: list[object] = [
         (
@@ -98,8 +175,8 @@ def _build_cleaner_generation_prompt(
     ]
 
     if previous_program is not None and validation_issues:
-        error_lines = "\n".join(f"- {_format_validation_issue(issue)}" for issue in validation_issues[:20])
-        concrete_examples = _format_validation_examples(validation_issues, limit=8)
+        error_lines = "\n".join(f"- {format_validation_issue(issue)}" for issue in validation_issues[:20])
+        concrete_examples = format_validation_examples(validation_issues, limit=8)
         has_self_containment_failure = any(
             issue.category == "non_self_contained_function" for issue in validation_issues
         )
@@ -143,6 +220,9 @@ def _build_cleaner_generation_prompt(
                 ]
             )
 
+        if stagnation_detected:
+            prompt.append(attach_text_document(_build_stagnation_unblock_brief(request)))
+
     return prompt
 
 
@@ -155,10 +235,13 @@ def run_column_cleaner_program(
     validation_issues: list[CleanerValidationIssue] = []
     repair_diagnosis: CleanerRepairDiagnosis | None = None
     last_issue_fingerprint: tuple[str, ...] | None = None
+    consecutive_stagnant_attempts = 0
 
     for attempt in range(1, max_attempts + 1):
+        stagnation_detected = consecutive_stagnant_attempts >= 1
         print(
-            f"[orchestrator][generator] column='{request.column_name}' attempt={attempt}/{max_attempts}",
+            f"[orchestrator][generator] column='{request.column_name}' attempt={attempt}/{max_attempts}"
+            + (f" [STAGNATION OVERRIDE active, temp bumped]" if stagnation_detected else ""),
             file=sys.stderr,
         )
         prompt = _build_cleaner_generation_prompt(
@@ -168,28 +251,36 @@ def run_column_cleaner_program(
             validation_issues=validation_issues,
             repair_diagnosis=repair_diagnosis,
             attempt_number=attempt,
+            stagnation_detected=stagnation_detected,
         )
         try:
+            # Escalate temperature to break deterministic repetition when the model keeps
+            # emitting the same code. Step up further on longer stagnant streaks.
+            override_settings: dict | None = None
+            if stagnation_detected:
+                bumped_temp = min(0.2 + 0.1 * (consecutive_stagnant_attempts - 1), 0.5)
+                override_settings = {"temperature": bumped_temp}
             program = run_agent_with_backoff(
                 column_cleaner_generator_agent,
                 prompt,
                 usage_limits=GENERATOR_USAGE_LIMITS,
+                model_settings=override_settings,
             ).output
         except UsageLimitExceeded as error:
             raise ValueError(
                 "Generator exceeded the one-code-execution limit. "
                 "This prevents hidden self-repair loops; simplify the prompt or raise the explicit limit if needed."
             ) from error
-        validation_issues = _validate_generated_cleaner_program(request, program)
+        validation_issues = validate_generated_cleaner_program(request, program)
         if not validation_issues:
-            program = _rebuild_verified_program(request, program)
+            program = rebuild_verified_program(request, program)
             print(
                 f"[orchestrator][generator] column='{request.column_name}' accepted on attempt {attempt}",
                 file=sys.stderr,
             )
             return program
 
-        issue_fingerprint = _validation_issue_fingerprint(validation_issues)
+        issue_fingerprint = validation_issue_fingerprint(validation_issues)
         same_code_as_previous = (
             previous_program is not None
             and program.python_code.strip() == previous_program.python_code.strip()
@@ -214,6 +305,9 @@ def run_column_cleaner_program(
                 f"[orchestrator][validator] column='{request.column_name}' no-progress warning on attempt {attempt}/{max_attempts}: model {reason}; continuing until retry budget is exhausted unless the critic stops the run",
                 file=sys.stderr,
             )
+            consecutive_stagnant_attempts += 1
+        else:
+            consecutive_stagnant_attempts = 0
 
         previous_program = program
         last_issue_fingerprint = issue_fingerprint
@@ -237,13 +331,13 @@ def run_column_cleaner_program(
                     file=sys.stderr,
                 )
             if not repair_diagnosis.should_retry:
-                failure_lines = "\n".join(f"- {_format_validation_issue(issue)}" for issue in validation_issues[:10])
+                failure_lines = "\n".join(f"- {format_validation_issue(issue)}" for issue in validation_issues[:10])
                 raise ValueError(
                     f"Cleaner generation stopped for column '{request.column_name}' because the critic advised against retrying: "
                     f"{repair_diagnosis.root_cause}\n{failure_lines}"
                 )
 
-    failure_lines = "\n".join(f"- {_format_validation_issue(issue)}" for issue in validation_issues[:10])
+    failure_lines = "\n".join(f"- {format_validation_issue(issue)}" for issue in validation_issues[:10])
     raise ValueError(
         f"Cleaner generation failed local validation for column '{request.column_name}' after {max_attempts} attempts:\n"
         f"{failure_lines}"
@@ -259,7 +353,7 @@ def run_cleaner_generation(
     if max_attempts < 1:
         raise ValueError("max_attempts must be at least 1.")
 
-    consistency = run_consistency_validation(path, reuse_cache=reuse_consistency)
+    consistency = run_format_consistency_validation(path, reuse_cache=reuse_consistency)
     df = load_dataset_frame(path)
     artifacts: list[GeneratedCleanerArtifact] = []
 

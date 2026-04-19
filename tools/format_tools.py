@@ -1,3 +1,7 @@
+"""Per-column format profiling: dominant value shape, outlier examples, and
+the ``ColumnFormatFacts`` bundle fed to the format-consistency agent and the
+cleaner generator."""
+
 from __future__ import annotations
 
 from collections import Counter

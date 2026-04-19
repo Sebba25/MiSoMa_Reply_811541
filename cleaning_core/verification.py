@@ -1,3 +1,11 @@
+"""Compares format-consistency findings before and after cleaning.
+
+Re-runs ``run_format_consistency_validation`` on the cleaned CSV, aligns the
+findings through the schema rename map, and emits a per-column diff
+(``resolved`` / ``improved`` / ``unchanged`` / ``regressed`` / ``new``) for
+the verification agent and the CLI to surface.
+"""
+
 from __future__ import annotations
 
 import sys
@@ -7,7 +15,7 @@ import pandas as pd
 
 from cache import load_consistency, load_schema_handoff
 from models import ConsistencyVerificationReport, FindingDiff
-from pipeline import run_consistency_validation
+from pipeline import run_format_consistency_validation
 from tools.tools import load_dataset_frame
 
 from .paths import cleaned_dataset_path
@@ -92,7 +100,7 @@ def run_verify(path: Path) -> ConsistencyVerificationReport:
     numeric_original_names = _numeric_original_names(cleaned_df, reverse_rename)
 
     print(f"\n[verify] running consistency on cleaned dataset: {cleaned_path}", file=sys.stderr)
-    after = run_consistency_validation(cleaned_path, reuse_cache=False, read_as_str=True)
+    after = run_format_consistency_validation(cleaned_path, reuse_cache=False, read_as_str=True)
     after_map = {
         reverse_rename.get(finding.column_name, finding.column_name): finding
         for finding in after.format_consistency_findings

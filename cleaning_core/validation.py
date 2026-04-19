@@ -1,3 +1,19 @@
+"""Host-side validator for generated cleaner programs.
+
+Runs each ``ColumnCleanerProgram`` against the dominant and inconsistent
+example values from its ``ColumnCleaningRequest`` and returns a list of
+``CleanerValidationIssue``s covering the known failure categories:
+
+    * ``non_self_contained_function`` / ``runtime_exception``
+    * ``shadowed_specific_branch``  (static pattern check)
+    * ``dominant_value_modified``   (must be identity on valid inputs)
+    * ``outlier_unchanged`` / ``wrong_output_shape``
+    * ``not_parseable_as_target_dtype`` / ``not_matching_target_pattern``
+
+The generator/critic loop reads these issues to decide whether to retry, ask
+the critic, or escalate temperature.
+"""
+
 from __future__ import annotations
 
 from collections import Counter

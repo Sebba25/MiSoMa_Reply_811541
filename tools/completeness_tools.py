@@ -1,3 +1,6 @@
+"""Completeness profiling: null counts, placeholder-token detection, and
+per-column summaries consumed by the completeness analysis agent."""
+
 from __future__ import annotations
 
 from pydantic import BaseModel, Field

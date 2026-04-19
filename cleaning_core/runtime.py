@@ -1,3 +1,11 @@
+"""Runtime for generated cleaner programs.
+
+``load_cleaner_callable`` ``exec``s the generated Python code in a locked-down
+namespace (``re``, ``datetime``, optional ``dateutil`` / ``dateparser``) and
+returns the callable. ``apply_cleaner_to_series`` iterates a column, collects
+sample updates, and returns a per-column execution report.
+"""
+
 from __future__ import annotations
 
 from typing import Any

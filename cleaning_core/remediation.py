@@ -1,3 +1,12 @@
+"""Builds the remediation plan from the validation bundle.
+
+Walks the schema, completeness, consistency, anomaly, cross-column and
+duplicate reports and emits a flat ``list[RemediationAction]`` covering:
+rename, placeholder-null replacement, dtype cast, cleaner generation, and
+duplicate-column drop. Each action has an auto-apply policy bit that the
+``application`` stage uses to decide whether to run it unattended.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path

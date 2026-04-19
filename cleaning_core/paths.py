@@ -1,3 +1,11 @@
+"""Cache + output path conventions for the cleaning pipeline.
+
+All paths live under ``<dataset.parent>/.cleaning_cache/<dataset.stem>/``.
+Helpers for the generated-cleaners directory, the cleaned CSV, the cleaner
+manifest, and the final report are centralised here so stage code never
+hard-codes paths.
+"""
+
 from __future__ import annotations
 
 import json

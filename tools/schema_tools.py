@@ -1,3 +1,9 @@
+"""Dataset + column profiling for the schema / dtype-inference agents.
+
+Provides the text rendering consumed by ``dtype_inference_agent``, the naming
+rules (``is_valid_schema_name`` / ``normalized_schema_name``), and the
+dataset-level profile aggregate."""
+
 from __future__ import annotations
 import re
 from pydantic import BaseModel, Field

@@ -1,3 +1,12 @@
+"""Builds ``ColumnCleaningRequest`` from a consistency finding + format facts.
+
+Merges schema, completeness, and format-profile signals into a single bundle
+fed to the generator agent. Includes datetime-specific augmentation: when the
+target dtype is ``datetime64[ns]`` we derive a canonical expected pattern
+from dominant examples and prepend a datetime output contract to the
+suggested strategy.
+"""
+
 from __future__ import annotations
 
 import re

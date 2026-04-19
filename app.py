@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import io
 import shutil
 import sys
@@ -14,7 +15,7 @@ load_dotenv()
 
 from agents import setup_logfire
 from cache import load_validation_results
-from cleaning_core.legacy import (
+from cleaning_core.orchestrator import (
     _build_cleaning_requests,
     _resolve_remediation_plan,
 )
@@ -47,8 +48,8 @@ from pipeline import (
 # ---------------------------------------------------------------------------
 
 st.set_page_config(
-    page_title="NoiPA — Data Quality Atelier",
-    page_icon="◆",
+    page_title="NoiPA - Data Quality Atelier",
+    page_icon="*",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -291,21 +292,42 @@ h1 { font-weight: 400 !important; }
     font-size: 0.75rem !important;
     text-transform: uppercase !important;
     letter-spacing: 0.2em !important;
-    background: var(--ink) !important;
-    color: var(--paper) !important;
-    border: none !important;
+    background: transparent !important;
+    color: var(--ink) !important;
+    border: 1px solid var(--ink) !important;
     border-radius: 0 !important;
     padding: 0.8rem 2rem !important;
     font-weight: 500 !important;
     transition: all 0.2s ease !important;
 }
 .stButton > button:hover {
-    background: var(--accent) !important;
+    background: var(--ink) !important;
+    color: var(--paper) !important;
     transform: translateY(-1px) !important;
 }
-.stButton > button:disabled {
-    background: var(--rule) !important;
+/* Primary variant — the Run pipeline call-to-action */
+.stButton > button[kind="primary"],
+.stButton > button[data-testid="baseButton-primary"] {
+    background: var(--accent) !important;
+    color: var(--paper) !important;
+    border: 1px solid var(--accent) !important;
+    box-shadow: 4px 4px 0 rgba(26, 22, 19, 0.12) !important;
+}
+.stButton > button[kind="primary"]:hover,
+.stButton > button[data-testid="baseButton-primary"]:hover {
+    background: var(--ink) !important;
+    color: var(--paper) !important;
+    border-color: var(--ink) !important;
+    box-shadow: 4px 4px 0 rgba(181, 68, 32, 0.22) !important;
+}
+.stButton > button:disabled,
+.stButton > button[kind="primary"]:disabled,
+.stButton > button[data-testid="baseButton-primary"]:disabled {
+    background: var(--paper-deep) !important;
     color: var(--ink-muted) !important;
+    border: 1px dashed var(--ink-muted) !important;
+    box-shadow: none !important;
+    cursor: not-allowed !important;
 }
 
 /* Download button override */
@@ -468,12 +490,27 @@ h1 { font-weight: 400 !important; }
     border: 1px solid var(--rule) !important;
 }
 
+/* Force the entire status widget surface to the light paper tone */
+.stApp [data-testid="stStatus"],
+.stApp [data-testid="stStatus"] > *,
+.stApp [data-testid="stStatus"] details,
+.stApp [data-testid="stStatus"] summary,
+.stApp [data-testid="stStatus"] summary + div,
+.stApp [data-testid="stStatus"] [data-testid="stStatusContent"],
+.stApp [data-testid="stStatus"] [data-testid="stVerticalBlock"] {
+    background: var(--paper-deep) !important;
+    background-color: var(--paper-deep) !important;
+    opacity: 1 !important;
+}
+
 /* Force every descendant (including summary text nodes) to ink on transparent */
 .stApp [data-testid="stStatus"] *:not(svg):not(path):not(g):not(circle):not(line):not(rect),
 .stApp [data-testid="stStatus"] summary *,
 .stApp [data-testid="stStatus"] > summary * {
     background-color: transparent !important;
     color: var(--ink) !important;
+    -webkit-text-fill-color: var(--ink) !important;
+    opacity: 1 !important;
 }
 details.stStatus > summary,
 details[data-testid="stStatus"] > summary {
@@ -515,6 +552,36 @@ details[data-testid="stStatus"] > div,
 /* Status icon/spinner colour */
 [data-testid="stStatus"] svg { color: var(--accent) !important; }
 
+/* Status summary readability - keep readable even before hover/open */
+.stApp details[data-testid="stStatus"] summary,
+.stApp details[data-testid="stStatus"] > summary,
+.stApp details[data-testid="stStatus"] summary:hover,
+.stApp details[data-testid="stStatus"] > summary:hover,
+.stApp details.stStatus summary,
+.stApp details.stStatus > summary,
+.stApp details.stStatus summary:hover,
+.stApp details.stStatus > summary:hover {
+    background: var(--paper-deep) !important;
+    background-color: var(--paper-deep) !important;
+    color: var(--ink) !important;
+    -webkit-text-fill-color: var(--ink) !important;
+    opacity: 1 !important;
+}
+.stApp details[data-testid="stStatus"] summary *,
+.stApp details[data-testid="stStatus"] > summary *,
+.stApp details[data-testid="stStatus"] summary:hover *,
+.stApp details[data-testid="stStatus"] > summary:hover *,
+.stApp details.stStatus summary *,
+.stApp details.stStatus > summary *,
+.stApp details.stStatus summary:hover *,
+.stApp details.stStatus > summary:hover * {
+    color: var(--ink) !important;
+    fill: var(--ink) !important;
+    stroke: var(--ink) !important;
+    -webkit-text-fill-color: var(--ink) !important;
+    opacity: 1 !important;
+}
+
 /* Captions — ensure readable contrast */
 .stCaption, [data-testid="stCaptionContainer"], small {
     color: var(--ink-soft) !important;
@@ -541,45 +608,315 @@ details[data-testid="stStatus"] > div,
     color: var(--ink) !important;
 }
 
-/* Progress bar — sand track, green fill, transparent label */
-.stApp .stProgress,
-.stApp [data-testid="stProgress"],
-.stApp .stProgress > div,
-.stApp [data-testid="stProgress"] > div,
-.stApp .stProgress p,
-.stApp [data-testid="stProgress"] p,
-.stApp .stProgress label,
-.stApp [data-testid="stProgress"] label {
-    background: transparent !important;
-    background-color: transparent !important;
-    border-radius: 0 !important;
+/* Pipeline progress — editorial ticker: label left, percentage right, green fill on sand */
+.pipeline-progress {
+    margin: 0.4rem 0 1.2rem 0;
 }
-.stApp .stProgress > div > div,
-.stApp [data-testid="stProgress"] > div > div {
-    background: #e8dfcb !important;
-    background-color: #e8dfcb !important;
-    border-radius: 0 !important;
+.pipeline-progress .label-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 0.45rem;
+    gap: 1rem;
 }
-.stApp .stProgress > div > div > div,
-.stApp .stProgress > div > div > div > div,
-.stApp [data-testid="stProgress"] > div > div > div,
-.stApp [data-testid="stProgress"] div[role="progressbar"] > div,
-.stApp .stProgress div[role="progressbar"] > div {
-    background: var(--success) !important;
-    background-color: var(--success) !important;
-    background-image: none !important;
-    border-radius: 0 !important;
-    transition: width 0.4s ease !important;
-}
-.stApp .stProgress p,
-.stApp [data-testid="stProgress"] p {
+.pipeline-progress .label {
     color: var(--ink) !important;
     font-family: 'IBM Plex Mono', monospace !important;
     font-size: 0.72rem !important;
     text-transform: uppercase !important;
-    letter-spacing: 0.15em !important;
-    padding: 0 !important;
-    margin-top: 0.3rem !important;
+    letter-spacing: 0.18em !important;
+}
+.pipeline-progress .label .stage-name {
+    color: var(--accent);
+    font-weight: 600;
+}
+.pipeline-progress .pct {
+    font-family: 'Fraunces', serif;
+    font-size: 1.05rem;
+    font-weight: 400;
+    font-style: italic;
+    color: var(--ink);
+    letter-spacing: -0.01em;
+}
+.pipeline-progress .pct-num {
+    color: var(--success);
+    font-weight: 500;
+}
+.pipeline-progress .track {
+    width: 100%;
+    height: 10px;
+    background: #e8dfcb;
+    border-radius: 0;
+    overflow: hidden;
+    border: 1px solid var(--rule);
+    position: relative;
+}
+.pipeline-progress .fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--success) 0%, #6b8a45 100%);
+    width: 0%;
+    transition: width 0.45s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: inset 0 -2px 0 rgba(0,0,0,0.08);
+}
+
+/* Live pipeline theatre — active stage card + completed timeline */
+.run-log {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    margin-top: 1.2rem;
+}
+
+/* Active (running) stage — hero card */
+.run-log-entry.running {
+    position: relative;
+    border: 1px solid var(--accent);
+    background: #fff;
+    box-shadow: 5px 5px 0 rgba(181, 68, 32, 0.10);
+    margin-bottom: 1.4rem;
+    overflow: hidden;
+}
+.run-log-entry.running::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: -100%;
+    height: 2px;
+    width: 40%;
+    background: linear-gradient(90deg,
+        transparent 0%,
+        var(--accent-soft) 40%,
+        var(--accent) 50%,
+        var(--accent-soft) 60%,
+        transparent 100%);
+    animation: run-log-scan 1.8s linear infinite;
+}
+@keyframes run-log-scan {
+    0%   { left: -40%; }
+    100% { left: 100%; }
+}
+.run-log-entry.running .run-log-head {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 1.6rem;
+    align-items: center;
+    padding: 1.4rem 1.6rem 1.2rem 1.6rem;
+    background: transparent;
+    border-bottom: 1px solid var(--rule);
+}
+.run-log-entry.running .run-log-number {
+    font-family: 'Fraunces', serif;
+    font-size: 3rem;
+    font-weight: 300;
+    font-style: italic;
+    color: var(--accent);
+    line-height: 0.9;
+    letter-spacing: -0.02em;
+    min-width: 3.5rem;
+}
+.run-log-entry.running .run-log-title-group .run-log-overline {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.66rem;
+    text-transform: uppercase;
+    letter-spacing: 0.22em;
+    color: var(--accent);
+    margin-bottom: 0.35rem;
+}
+.run-log-entry.running .run-log-title-group .run-log-headline {
+    font-family: 'Fraunces', serif;
+    font-size: 1.45rem;
+    font-weight: 400;
+    font-style: italic;
+    color: var(--ink);
+    line-height: 1.15;
+    letter-spacing: -0.015em;
+}
+.run-log-entry.running .run-log-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+    color: var(--accent);
+    font-weight: 600;
+    white-space: nowrap;
+    padding: 0.45rem 0.8rem;
+    border: 1px solid var(--accent);
+    border-radius: 999px;
+}
+.run-log-entry.running .run-log-status::before {
+    content: '';
+    width: 8px;
+    height: 8px;
+    background: var(--accent);
+    border-radius: 50%;
+    animation: live-dot 1.2s ease-in-out infinite;
+}
+@keyframes live-dot {
+    0%, 100% { opacity: 1; transform: scale(1); box-shadow: 0 0 0 0 rgba(181, 68, 32, 0.6); }
+    50%      { opacity: 0.5; transform: scale(1.2); box-shadow: 0 0 0 6px rgba(181, 68, 32, 0); }
+}
+.run-log-entry.running .run-log-body {
+    padding: 1.1rem 1.6rem 1.3rem 1.6rem;
+    background: linear-gradient(180deg, #fff 0%, #fdfaf3 100%);
+}
+.run-log-entry.running .run-log-line {
+    font-family: 'Fraunces', serif;
+    font-size: 1.08rem;
+    font-style: italic;
+    color: var(--ink-soft);
+    line-height: 1.55;
+}
+.run-log-entry.running .run-log-line.working {
+    font-family: 'IBM Plex Mono', monospace;
+    font-style: normal;
+    font-size: 0.76rem;
+    color: var(--ink-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.2em;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+}
+.run-log-entry.running .run-log-line.working::before {
+    content: '';
+    display: inline-block;
+    width: 22px;
+    height: 1px;
+    background: var(--ink-muted);
+    position: relative;
+    overflow: visible;
+}
+.run-log-entry.running .run-log-line.working::after {
+    content: '...';
+    display: inline-block;
+    width: 1.2em;
+    text-align: left;
+    animation: working-dots 1.4s steps(4, end) infinite;
+    overflow: hidden;
+    vertical-align: bottom;
+}
+@keyframes working-dots {
+    0%   { width: 0; }
+    100% { width: 1.2em; }
+}
+.run-log-entry.running .run-log-line + .run-log-line {
+    margin-top: 0.55rem;
+}
+
+/* Completed / error timeline entries — compact */
+.run-log-entry.done,
+.run-log-entry.error {
+    display: grid;
+    grid-template-columns: 3.2rem 1fr auto;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.75rem 1.1rem;
+    border: none;
+    border-top: 1px solid var(--rule);
+    background: transparent;
+}
+.run-log-entry.done:last-child,
+.run-log-entry.error:last-child {
+    border-bottom: 1px solid var(--rule);
+}
+.run-log-entry.done .run-log-head,
+.run-log-entry.error .run-log-head {
+    display: contents;
+}
+.run-log-entry.done .run-log-body,
+.run-log-entry.error .run-log-body {
+    grid-column: 2 / 3;
+    grid-row: 2 / 3;
+    padding: 0;
+    margin-top: 0.15rem;
+}
+.run-log-entry.done .run-log-number,
+.run-log-entry.error .run-log-number {
+    font-family: 'Fraunces', serif;
+    font-size: 1.3rem;
+    font-style: italic;
+    color: var(--ink-muted);
+    line-height: 1;
+    grid-column: 1 / 2;
+    grid-row: 1 / 3;
+    align-self: center;
+    text-align: right;
+    padding-right: 0.6rem;
+    border-right: 1px solid var(--rule);
+}
+.run-log-entry.done .run-log-number::before {
+    content: '●';
+    color: var(--success);
+    font-size: 0.55rem;
+    display: block;
+    margin-bottom: 0.15rem;
+    font-style: normal;
+}
+.run-log-entry.error .run-log-number::before {
+    content: '●';
+    color: #8d2f23;
+    font-size: 0.55rem;
+    display: block;
+    margin-bottom: 0.15rem;
+    font-style: normal;
+}
+.run-log-entry.done .run-log-title-group,
+.run-log-entry.error .run-log-title-group {
+    grid-column: 2 / 3;
+    grid-row: 1 / 2;
+}
+.run-log-entry.done .run-log-overline,
+.run-log-entry.error .run-log-overline {
+    display: none;
+}
+.run-log-entry.done .run-log-headline,
+.run-log-entry.error .run-log-headline {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.76rem;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: var(--ink);
+    font-weight: 500;
+}
+.run-log-entry.done .run-log-status,
+.run-log-entry.error .run-log-status {
+    grid-column: 3 / 4;
+    grid-row: 1 / 2;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.66rem;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    white-space: nowrap;
+}
+.run-log-entry.done .run-log-status { color: var(--success); }
+.run-log-entry.error .run-log-status { color: #8d2f23; }
+.run-log-entry.done .run-log-line,
+.run-log-entry.error .run-log-line {
+    font-family: 'Fraunces', serif;
+    font-size: 0.95rem;
+    font-style: italic;
+    color: var(--ink-soft);
+    line-height: 1.45;
+}
+.run-log-entry.done .run-log-line + .run-log-line,
+.run-log-entry.error .run-log-line + .run-log-line {
+    margin-top: 0.2rem;
+}
+
+/* Section label above timeline */
+.run-log-section-label {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    letter-spacing: 0.22em;
+    color: var(--ink-muted);
+    padding-bottom: 0.4rem;
+    margin-bottom: 0.2rem;
+    margin-top: 0.5rem;
+    border-bottom: 1px solid var(--rule);
 }
 
 /* Tabs */
@@ -737,6 +1074,7 @@ def _init_state() -> None:
         "completed_stages": set(),
         "final_report": None,
         "narrative_report": None,
+        "narrative_error": None,
         "validation_results": None,
         "logfire_setup": False,
     }
@@ -746,11 +1084,11 @@ def _init_state() -> None:
 
 
 def _masthead() -> None:
-    now = datetime.now().strftime("%d %b %Y · %H:%M").upper()
+    now = datetime.now().strftime("%d %b %Y | %H:%M").upper()
     st.markdown(
         f"""
         <div class="masthead">
-            <div class="title">NoiPA · <em>Data Quality</em> Atelier</div>
+            <div class="title">NoiPA | <em>Data Quality</em> Atelier</div>
             <div class="meta">
                 No. {datetime.now().strftime("%Y.%m")}<br/>
                 <b>{now}</b>
@@ -805,6 +1143,94 @@ def _metric_grid(metrics: list[str]) -> None:
     st.markdown(f'<div class="metric-grid">{"".join(metrics)}</div>', unsafe_allow_html=True)
 
 
+def _progress_markup(pct: int, n_done: int, current: str | None) -> str:
+    safe_pct = max(0, min(100, pct))
+    total = len(PIPELINE_STAGES)
+    if current:
+        left = (
+            f'Stage <b>{n_done + 1}</b> of {total} &nbsp;&middot;&nbsp; '
+            f'<span class="stage-name">{html.escape(current)}</span>'
+        )
+    elif n_done == total:
+        left = f'Stage <b>{total}</b> of {total} &nbsp;&middot;&nbsp; <span class="stage-name">Complete</span>'
+    elif n_done == 0:
+        left = 'Waiting to start'
+    else:
+        left = f'Stage <b>{n_done}</b> of {total} &nbsp;&middot;&nbsp; <span class="stage-name">Idle</span>'
+    right = f'<span class="pct-num">{safe_pct}%</span>'
+    return (
+        '<div class="pipeline-progress">'
+        '<div class="label-row">'
+        f'<div class="label">{left}</div>'
+        f'<div class="pct">{right}</div>'
+        '</div>'
+        '<div class="track">'
+        f'<div class="fill" style="width:{safe_pct}%;"></div>'
+        '</div>'
+        '</div>'
+    )
+
+
+_STAGE_NUMBER_BY_NAME = {name: num for num, name, _caption in PIPELINE_STAGES}
+
+
+def _stage_log_markup(entries: list[dict[str, object]]) -> str:
+    status_labels = {
+        "running": "Live",
+        "done": "Done",
+        "error": "Failed",
+    }
+
+    running_html: list[str] = []
+    completed_html: list[str] = []
+
+    for entry in entries:
+        status = str(entry.get("status", "running"))
+        title_raw = str(entry.get("title", ""))
+        title = html.escape(title_raw)
+        caption = html.escape(str(entry.get("caption", "")))
+        lines = entry.get("lines", [])
+        # Map displayed uppercase title back to PIPELINE_STAGES name to get stage number
+        number = _STAGE_NUMBER_BY_NAME.get(title_raw.title(), "")
+        if not number:
+            for name, num in {n: x for x, n, _c in PIPELINE_STAGES}.items():
+                if name.upper() == title_raw:
+                    number = num
+                    break
+
+        parts: list[str] = []
+        parts.append(f'<div class="run-log-entry {status}">')
+        parts.append('<div class="run-log-head">')
+        if number:
+            parts.append(f'<div class="run-log-number">{number}</div>')
+        parts.append('<div class="run-log-title-group">')
+        parts.append(f'<div class="run-log-overline">Stage {number} of 12</div>' if number else '<div class="run-log-overline"></div>')
+        parts.append(f'<div class="run-log-headline">{title} &mdash; {caption}</div>')
+        parts.append('</div>')
+        parts.append(f'<div class="run-log-status">{status_labels.get(status, status.title())}</div>')
+        parts.append('</div>')
+        parts.append('<div class="run-log-body">')
+        if isinstance(lines, list) and lines:
+            for line in lines:
+                parts.append(f'<div class="run-log-line">{html.escape(str(line))}</div>')
+        else:
+            parts.append('<div class="run-log-line working">Working</div>')
+        parts.append('</div></div>')
+
+        if status == "running":
+            running_html.extend(parts)
+        else:
+            completed_html.extend(parts)
+
+    html_parts = ['<div class="run-log">']
+    html_parts.extend(running_html)
+    if completed_html:
+        html_parts.append('<div class="run-log-section-label">Completed stages</div>')
+        html_parts.extend(completed_html)
+    html_parts.append('</div>')
+    return "".join(html_parts)
+
+
 def _save_uploaded_file(uploaded) -> Path:
     target_dir = Path(__file__).parent / "Data"
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -830,8 +1256,7 @@ def _render_progress(n_done: int, current: str | None, strip_ph, prog_ph) -> Non
         unsafe_allow_html=True,
     )
     pct = int(n_done / len(PIPELINE_STAGES) * 100)
-    label = f"Stage {n_done} of {len(PIPELINE_STAGES)} · {current or 'Done'} · {pct}%"
-    prog_ph.progress(pct / 100, text=label)
+    prog_ph.markdown(_progress_markup(pct, n_done, current), unsafe_allow_html=True)
 
 
 def _mark_stage(name: str, strip_ph, prog_ph) -> None:
@@ -848,12 +1273,51 @@ def _complete_stage(name: str, strip_ph, prog_ph) -> None:
 def run_full_pipeline(dataset_path: Path, strip_ph, prog_ph, log_container) -> None:
     st.session_state.completed_stages = set()
     st.session_state.current_stage = None
+    st.session_state.narrative_error = None
     _render_progress(0, None, strip_ph, prog_ph)
+    stage_entries: list[dict[str, object]] = []
+    log_ph = log_container.empty()
 
-    def stage_banner(stage_name: str, caption: str):
-        return log_container.status(
-            f"▸ {stage_name.upper()}  ·  {caption}", expanded=True
-        )
+    def _render_stage_log() -> None:
+        log_ph.markdown(_stage_log_markup(stage_entries), unsafe_allow_html=True)
+
+    class stage_banner:
+        def __init__(self, stage_name: str, caption: str):
+            self.stage_name = stage_name
+            self.caption = caption
+            self.entry: dict[str, object] | None = None
+
+        def __enter__(self):
+            self.entry = {
+                "title": self.stage_name.upper(),
+                "caption": self.caption,
+                "status": "running",
+                "lines": [],
+            }
+            stage_entries.append(self.entry)
+            _render_stage_log()
+            return self
+
+        def write(self, text: object) -> None:
+            if self.entry is None:
+                return
+            lines = self.entry.setdefault("lines", [])
+            assert isinstance(lines, list)
+            lines.append(str(text))
+            _render_stage_log()
+
+        def __exit__(self, exc_type, exc, tb):
+            if self.entry is None:
+                return False
+            if exc_type is None:
+                self.entry["status"] = "done"
+            else:
+                self.entry["status"] = "error"
+                lines = self.entry.setdefault("lines", [])
+                assert isinstance(lines, list)
+                lines.append(f"Pipeline step failed: {exc}")
+            _render_stage_log()
+            return False
 
     # Stage 1: dtype inference
     _mark_stage("Dtype", strip_ph, prog_ph)
@@ -968,10 +1432,18 @@ def run_full_pipeline(dataset_path: Path, strip_ph, prog_ph, log_container) -> N
     # Stage 12: narrative
     _mark_stage("Narrative", strip_ph, prog_ph)
     with stage_banner("Narrative", "agent writing the final quality report") as s:
-        narrative = generate_narrative_report(final_report)
-        save_narrative_report(dataset_path, narrative)
-        st.session_state.narrative_report = narrative
-        s.write(f"Report written: {len(narrative.sections)} sections, {len(narrative.recommendations)} recommendations.")
+        try:
+            narrative = generate_narrative_report(final_report)
+            save_narrative_report(dataset_path, narrative)
+            st.session_state.narrative_report = narrative
+            st.session_state.narrative_error = None
+            s.write(
+                f"Report written: {len(narrative.sections)} sections, {len(narrative.recommendations)} recommendations."
+            )
+        except Exception as exc:
+            st.session_state.narrative_report = None
+            st.session_state.narrative_error = str(exc)
+            s.write("Narrative agent unavailable. Showing the structured final report instead.")
     _complete_stage("Narrative", strip_ph, prog_ph)
 
     st.session_state.pipeline_done = True
@@ -1005,6 +1477,9 @@ def view_upload() -> None:
             st.session_state.dataset_name = saved_path.stem
             st.session_state.pipeline_done = False
             st.session_state.completed_stages = set()
+            st.session_state.final_report = None
+            st.session_state.narrative_report = None
+            st.session_state.narrative_error = None
 
     with col_b:
         st.markdown('<div class="panel-label">Or select an existing dataset</div>', unsafe_allow_html=True)
@@ -1030,6 +1505,9 @@ def view_upload() -> None:
                 st.session_state.dataset_name = options[choice].stem
                 st.session_state.pipeline_done = False
                 st.session_state.completed_stages = set()
+                st.session_state.final_report = None
+                st.session_state.narrative_report = None
+                st.session_state.narrative_error = None
                 st.rerun()
         else:
             st.caption("No datasets found in the Data/ folder.")
@@ -1088,25 +1566,26 @@ def view_pipeline() -> None:
     n_done = len(st.session_state.completed_stages)
     pct = int(n_done / len(PIPELINE_STAGES) * 100)
     current = st.session_state.current_stage
-    prog_label = (
-        f"Stage {n_done} of {len(PIPELINE_STAGES)} · {current} · {pct}%"
-        if current
-        else (f"Complete · {pct}%" if n_done else "Waiting to start")
-    )
     prog_ph = st.empty()
-    prog_ph.progress(pct / 100, text=prog_label)
+    prog_ph.markdown(_progress_markup(pct, n_done, current), unsafe_allow_html=True)
 
     col_run, col_reset = st.columns([3, 1])
     with col_run:
         disabled = st.session_state.dataset_path is None or st.session_state.pipeline_done
-        run_label = "Run pipeline" if not st.session_state.pipeline_done else "Pipeline complete ✓"
-        run_clicked = st.button(run_label, disabled=disabled, use_container_width=True)
+        if st.session_state.pipeline_done:
+            run_label = "Pipeline complete ✓"
+        elif st.session_state.dataset_path is None:
+            run_label = "Select a dataset first"
+        else:
+            run_label = "Run pipeline"
+        run_clicked = st.button(run_label, disabled=disabled, use_container_width=True, type="primary")
     with col_reset:
         if st.button("Reset", use_container_width=True):
             st.session_state.pipeline_done = False
             st.session_state.completed_stages = set()
             st.session_state.final_report = None
             st.session_state.narrative_report = None
+            st.session_state.narrative_error = None
             st.rerun()
 
     log_container = st.container()
@@ -1135,8 +1614,18 @@ def view_pipeline() -> None:
 def view_report() -> None:
     final_report: FinalPipelineReport | None = st.session_state.final_report
     narrative = st.session_state.narrative_report
+    narrative_error = st.session_state.get("narrative_error")
     if final_report is None:
-        st.info("Run the pipeline to generate the report.")
+        # Suppress the placeholder while the pipeline is live — the theatre above tells the story.
+        if st.session_state.get("current_stage") is None and not st.session_state.completed_stages:
+            st.markdown(
+                '<div class="panel" style="text-align:center; padding:2rem 1.4rem;">'
+                '<div class="panel-label">Awaiting run</div>'
+                '<div style="font-family:Fraunces,serif; font-style:italic; font-size:1.1rem; color:var(--ink-muted);">'
+                'The verdict will appear here once the pipeline completes.</div>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
         return
 
     _section("III", "The Verdict", "quality metrics at a glance")
@@ -1169,7 +1658,7 @@ def view_report() -> None:
         if narrative is not None:
             _render_narrative(narrative)
         else:
-            st.caption("Narrative not available.")
+            _render_structured_report_fallback(final_report, narrative_error)
 
     with tab_actions:
         _render_action_ledger(final_report)
@@ -1203,7 +1692,7 @@ def _render_narrative(narrative) -> None:
         unsafe_allow_html=True,
     )
 
-    st.markdown('<div class="ornament">· · ·</div>', unsafe_allow_html=True)
+    st.markdown('<div class="ornament">* * *</div>', unsafe_allow_html=True)
 
     # Download buttons
     report_text = f"# {narrative.title}\n\n{narrative.executive_summary}\n\n" + "\n\n".join(
@@ -1217,7 +1706,7 @@ def _render_narrative(narrative) -> None:
     col_a, col_b = st.columns(2)
     with col_a:
         st.download_button(
-            "⬇ Download report (markdown)",
+            "Download report (markdown)",
             data=report_text,
             file_name=f"{st.session_state.dataset_name}_quality_report.md",
             mime="text/markdown",
@@ -1226,12 +1715,59 @@ def _render_narrative(narrative) -> None:
     with col_b:
         import json as _json
         st.download_button(
-            "⬇ Download structured data (JSON)",
+            "Download structured data (JSON)",
             data=_json.dumps(st.session_state.final_report.model_dump(), indent=2, ensure_ascii=False),
             file_name=f"{st.session_state.dataset_name}_final_report.json",
             mime="application/json",
             use_container_width=True,
         )
+
+
+def _render_structured_report_fallback(final_report: FinalPipelineReport, narrative_error: str | None) -> None:
+    st.markdown(
+        '<div class="kicker">Structured Report</div>'
+        '<h1 style="font-family:Fraunces,serif; font-size:2.2rem; font-weight:400; font-style:italic; margin-top:0.3rem; margin-bottom:1.2rem;">'
+        f"{final_report.dataset_name} Quality Summary"
+        "</h1>",
+        unsafe_allow_html=True,
+    )
+    if narrative_error:
+        st.warning(
+            "The narrative agent was unavailable for this run. "
+            "The structured final report is still complete and reflects the pipeline output."
+        )
+
+    st.markdown(f'<div class="lede">{final_report.summary}</div>', unsafe_allow_html=True)
+
+    st.markdown("### Outcome")
+    st.write(final_report.cleaning_summary)
+    st.write(final_report.verification_summary)
+
+    st.markdown("### Action Summary")
+    st.write(
+        f"Applied {len(final_report.applied_actions)} actions, "
+        f"left {len(final_report.proposed_not_applied_actions)} for manual review or reporting, "
+        f"and recorded {len(final_report.failed_actions)} failed actions."
+    )
+
+    if final_report.manual_review_queue:
+        st.markdown("### Manual Review Queue")
+        preview_rows = []
+        for action in final_report.manual_review_queue[:8]:
+            preview_rows.append(
+                {
+                    "Type": action.action_type,
+                    "Source": action.source_check,
+                    "Target": ", ".join(f"{k}={v}" for k, v in action.target.items()) if action.target else "-",
+                    "Reason": action.reason[:140] + "..." if len(action.reason) > 140 else action.reason,
+                }
+            )
+        st.dataframe(pd.DataFrame(preview_rows), use_container_width=True, hide_index=True)
+
+    if final_report.unresolved_risks:
+        st.markdown("### Residual Risks")
+        for risk in final_report.unresolved_risks:
+            st.write(f"- {risk}")
 
 
 def _render_action_ledger(final_report: FinalPipelineReport) -> None:
@@ -1242,24 +1778,24 @@ def _render_action_ledger(final_report: FinalPipelineReport) -> None:
     ]
     for label, _variant, actions in buckets:
         st.markdown(
-            f'<div class="kicker" style="color:var(--ink-muted);">{label} · {len(actions)}</div>',
+            f'<div class="kicker" style="color:var(--ink-muted);">{label} | {len(actions)}</div>',
             unsafe_allow_html=True,
         )
         if not actions:
-            st.caption("— no actions in this category —")
+            st.caption("-- no actions in this category --")
             continue
         rows = []
         for a in actions:
-            target_str = ", ".join(f"{k}={v}" for k, v in (a.target or {}).items()) if a.target else "—"
+            target_str = ", ".join(f"{k}={v}" for k, v in (a.target or {}).items()) if a.target else "-"
             if len(target_str) > 80:
-                target_str = target_str[:77] + "…"
+                target_str = target_str[:77] + "..."
             rows.append({
                 "Type": a.action_type,
                 "Source": a.source_check,
                 "Confidence": a.confidence,
                 "Risk": a.risk_level,
                 "Target": target_str,
-                "Reason": a.reason[:120] + "…" if len(a.reason) > 120 else a.reason,
+                "Reason": a.reason[:120] + "..." if len(a.reason) > 120 else a.reason,
             })
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
@@ -1275,7 +1811,7 @@ def _render_action_ledger(final_report: FinalPipelineReport) -> None:
 
 def _render_cleaned_dataset(dataset_path: Path | None) -> None:
     if dataset_path is None:
-        st.caption("—")
+        st.caption("-")
         return
     cleaned_path = cleaned_dataset_path(dataset_path)
     if not cleaned_path.exists():
@@ -1299,7 +1835,7 @@ def _render_cleaned_dataset(dataset_path: Path | None) -> None:
 
     with open(cleaned_path, "rb") as fh:
         st.download_button(
-            "⬇ Download cleaned CSV",
+            "Download cleaned CSV",
             data=fh.read(),
             file_name=cleaned_path.name,
             mime="text/csv",
@@ -1318,10 +1854,10 @@ def main() -> None:
     view_report()
 
     st.markdown(
-        '<div class="ornament">◆</div>'
+        '<div class="ornament">*</div>'
         '<div style="text-align:center; font-family:IBM Plex Mono,monospace; '
         'font-size:0.68rem; text-transform:uppercase; letter-spacing:0.25em; '
-        'color:var(--ink-muted);">Ministry of Economy and Finance · NoiPA · Data Quality Atelier</div>',
+        'color:var(--ink-muted);">Ministry of Economy and Finance | NoiPA | Data Quality Atelier</div>',
         unsafe_allow_html=True,
     )
 

@@ -1,3 +1,11 @@
+"""Final report assembly + narrative generation.
+
+``build_final_report`` merges validation, remediation, cleaning and
+verification artifacts into a single ``FinalPipelineReport``;
+``generate_narrative_report`` hands that report to the narrative agent to
+produce the Markdown summary saved alongside the cleaned CSV.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path

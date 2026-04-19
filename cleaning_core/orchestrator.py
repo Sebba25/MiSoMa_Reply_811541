@@ -1,3 +1,14 @@
+"""End-to-end orchestrator for the cleaning pipeline.
+
+Ties the cleaning stages together: resolves the validation bundle, builds
+per-column cleaning requests, drives the remediation planner, runs the
+generator/critic loop, applies remediations + generated cleaners, verifies the
+result, and produces the narrative report.
+
+Public entry point: ``run_cleaning``. The private helpers are consumed by
+``app.py`` when it wants to stitch stages together itself.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path

@@ -1,3 +1,17 @@
+"""Validation-stage orchestration.
+
+Drives the validation half of the pipeline: dtype inference, schema
+validation, completeness analysis, per-column format consistency, anomaly
+detection, cross-column checks and duplicate detection. Each stage function
+caches its artifact via ``cache.py`` and — where an LLM summary is needed —
+funnels through ``_summarize_validation_report`` to keep the
+agent-call boilerplate in one place.
+
+The public entry point is ``build_validation_results`` (run every stage),
+but each ``run_<stage>`` helper is also importable on its own for the CLI
+and the Streamlit UI.
+"""
+
 from __future__ import annotations
 
 from collections import Counter
@@ -675,10 +689,6 @@ def run_format_consistency_validation(path: Path, reuse_cache: bool = False, rea
     return report
 
 
-def run_consistency_validation(path: Path, reuse_cache: bool = False, read_as_str: bool = False) -> ConsistencyValidationReport:
-    return run_format_consistency_validation(path, reuse_cache=reuse_cache, read_as_str=read_as_str)
-
-
 def build_validation_results(
     path: Path,
     reuse_schema: bool = False,
@@ -687,7 +697,7 @@ def build_validation_results(
 ) -> OrchestrationStepResult:
     schema_validation = run_schema_validation(path, reuse_cache=reuse_schema)
     completeness_analysis = run_completeness_analysis(path, reuse_cache=reuse_completeness)
-    consistency_validation = run_consistency_validation(path, reuse_cache=reuse_consistency)
+    consistency_validation = run_format_consistency_validation(path, reuse_cache=reuse_consistency)
     print(f"[orchestrator][anomaly] dataset='{path.stem}'", file=sys.stderr, flush=True)
     anomaly_detection = run_anomaly_detection(path)
     print(f"[orchestrator][cross-column] dataset='{path.stem}'", file=sys.stderr, flush=True)

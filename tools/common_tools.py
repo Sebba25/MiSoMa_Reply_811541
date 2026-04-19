@@ -1,3 +1,16 @@
+"""Cross-cutting helpers shared by the specialised ``tools/*`` modules.
+
+Groups four concerns:
+    * placeholder token list + attachment helpers for agent prompts
+    * numeric/datetime parse-rate and value-shape primitives
+    * schema pattern matchers used by the cleaner validator
+    * ``run_agent_with_backoff``: the single retrying entrypoint used by every
+      pydantic-ai agent call in the pipeline
+
+Nothing here talks to the agents directly — only pandas, pydantic, and the
+pydantic-ai runtime types.
+"""
+
 from __future__ import annotations
 
 import base64
@@ -31,10 +44,6 @@ PLACEHOLDER_TOKENS = ("", "na", "n/a", "null", "none", "-", "--", "unknown", "n.
 
 # Shared Attachment And I/O Helpers
 
-def attach_single_column_csv(df: pd.DataFrame, column_name: str) -> BinaryContent:
-    return BinaryContent(data=df[[column_name]].to_csv(index=False).encode("utf-8"), media_type="text/csv")
-
-
 def attach_text_document(text: str) -> BinaryContent:
     return BinaryContent(data=text.encode("utf-8"), media_type="text/plain")
 
@@ -51,23 +60,6 @@ def load_dataset_frame(path: Path, dtype: str | dict | None = None) -> pd.DataFr
 
 def gzip_text_to_base64(text: str) -> str:
     return base64.b64encode(gzip.compress(text.encode("utf-8"))).decode("ascii")
-
-
-def ungzip_base64_to_text(payload: str) -> str:
-    normalized = payload.strip()
-    if normalized.startswith("data:") and "," in normalized:
-        normalized = normalized.split(",", 1)[1]
-    normalized = "".join(normalized.split())
-    padding = len(normalized) % 4
-    if padding:
-        normalized += "=" * (4 - padding)
-
-    try:
-        decoded = base64.b64decode(normalized.encode("ascii"))
-    except Exception:
-        decoded = base64.urlsafe_b64decode(normalized.encode("ascii"))
-
-    return gzip.decompress(decoded).decode("utf-8")
 
 
 # Shared Profiling Helpers
@@ -423,6 +415,7 @@ def run_agent_with_backoff(
     prompt: str | list[object],
     max_attempts: int = 6,
     usage_limits: UsageLimits | None = None,
+    model_settings: dict | None = None,
 ):
     for attempt in range(max_attempts):
         try:
@@ -431,7 +424,13 @@ def run_agent_with_backoff(
                 agent_name = getattr(agent, "name", None) or "agent"
                 print(f"[{agent_name}] starting run (attempt {attempt + 1}/{max_attempts})", file=sys.stderr, flush=True)
                 event_stream_handler = build_terminal_event_stream_handler(agent_name)
-            return agent.run_sync(prompt, event_stream_handler=event_stream_handler, usage_limits=usage_limits)
+            run_kwargs: dict = {
+                "event_stream_handler": event_stream_handler,
+                "usage_limits": usage_limits,
+            }
+            if model_settings is not None:
+                run_kwargs["model_settings"] = model_settings
+            return agent.run_sync(prompt, **run_kwargs)
         except ModelHTTPError as error:
             if error.status_code != 429 or attempt == max_attempts - 1:
                 raise

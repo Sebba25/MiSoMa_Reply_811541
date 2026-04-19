@@ -1,41 +1,31 @@
+"""Public facade for the ``tools`` package.
+
+Thin re-export layer so callers can do ``from tools.tools import X`` without
+caring which specialised submodule (common / schema / format / completeness /
+quality) defines ``X``. Only symbols actually imported by code outside the
+``tools`` package are surfaced here — internal helpers stay private to their
+module to keep this facade small and the public API obvious.
+"""
+
 from tools.common_tools import (
     PLACEHOLDER_TOKENS,
     attach_profile_text,
-    attach_single_column_csv,
     attach_text_document,
-    compute_datetime_parse_pct,
-    compute_empty_like_pct,
-    compute_numeric_parse_pct,
     gzip_text_to_base64,
     load_dataset_frame,
     matches_numeric_schema_pattern,
     numeric_pattern_allows_variable_width,
-    parse_retry_after_seconds,
     run_agent_with_backoff,
-    sample_non_null_values,
-    ungzip_base64_to_text,
     value_shape,
 )
-from tools.completeness_tools import (
-    CompletenessColumnProfile,
-    CompletenessProfile,
-    build_completeness_profile,
-    compute_missing_like_mask,
-    detect_placeholder_values,
-    sample_placeholder_examples,
-)
+from tools.completeness_tools import build_completeness_profile
 from tools.format_tools import (
     ColumnFormatFacts,
-    ColumnFormatProfile,
     FormatOutlierExample,
-    ValueShapeProfile,
     build_column_format_facts,
-    build_column_format_profile,
-    compute_top_value_shapes,
 )
 from tools.schema_tools import (
     SchemaDuplicateGroup,
-    VALID_SCHEMA_NAME_RE,
     build_dataset_profile,
     build_dtype_inference_text,
     is_valid_schema_name,
@@ -57,27 +47,15 @@ from tools.quality_tools import (
 
 __all__ = [
     "PLACEHOLDER_TOKENS",
-    "VALID_SCHEMA_NAME_RE",
     "SchemaDuplicateGroup",
-    "CompletenessColumnProfile",
-    "CompletenessProfile",
-    "ValueShapeProfile",
-    "ColumnFormatProfile",
     "ColumnFormatFacts",
     "FormatOutlierExample",
     "attach_profile_text",
-    "attach_single_column_csv",
     "attach_text_document",
     "build_column_format_facts",
-    "build_column_format_profile",
     "build_completeness_profile",
     "build_dataset_profile",
     "build_dtype_inference_text",
-    "compute_datetime_parse_pct",
-    "compute_empty_like_pct",
-    "compute_missing_like_mask",
-    "compute_numeric_parse_pct",
-    "compute_top_value_shapes",
     "detect_date_order_violations",
     "detect_duplicate_like_columns",
     "detect_duplicate_semantic_conflicts",
@@ -86,20 +64,15 @@ __all__ = [
     "detect_numeric_outlier_candidates",
     "detect_rare_category_candidates",
     "detect_year_month_period_mismatches",
-    "detect_placeholder_values",
     "gzip_text_to_base64",
+    "infer_duplicate_key_columns",
     "is_valid_schema_name",
     "load_dataset_frame",
     "matches_numeric_schema_pattern",
     "naming_rule_reason",
-    "numeric_pattern_allows_variable_width",
     "normalized_schema_name",
-    "parse_retry_after_seconds",
+    "numeric_pattern_allows_variable_width",
     "run_agent_with_backoff",
-    "sample_non_null_values",
-    "sample_placeholder_examples",
-    "infer_duplicate_key_columns",
     "suggest_schema_name",
-    "ungzip_base64_to_text",
     "value_shape",
 ]
