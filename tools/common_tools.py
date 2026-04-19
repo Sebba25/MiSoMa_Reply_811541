@@ -2,19 +2,31 @@ from __future__ import annotations
 
 import base64
 import gzip
+import json
+import os
 from pathlib import Path
 import re
+import sys
 import time
 
 import pandas as pd
 from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
-from pydantic_ai.messages import BinaryContent
+from pydantic_ai.messages import (
+    BinaryContent,
+    FinalResultEvent,
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
+    PartDeltaEvent,
+    PartEndEvent,
+    PartStartEvent,
+)
+from pydantic_ai.usage import UsageLimits
 
 # Shared Constants
 
-PLACEHOLDER_TOKENS = ("", "na", "n/a", "null", "none", "-", "--", "unknown", "n.d.", "?")
+PLACEHOLDER_TOKENS = ("", "na", "n/a", "null", "none", "-", "--", "unknown", "n.d.", "?", "//")
 
 
 # Shared Attachment And I/O Helpers
@@ -31,8 +43,8 @@ def attach_profile_text(profile: BaseModel) -> BinaryContent:
     return attach_text_document(profile.model_dump_json(indent=2))
 
 
-def load_dataset_frame(path: Path) -> pd.DataFrame:
-    return pd.read_csv(path)
+def load_dataset_frame(path: Path, dtype: str | dict | None = None) -> pd.DataFrame:
+    return pd.read_csv(path, dtype=dtype)
 
 
 # Shared Encoding Helpers
@@ -131,10 +143,207 @@ def parse_retry_after_seconds(message: str, attempt: int) -> float:
     return min(2**attempt, 10)
 
 
-def run_agent_with_backoff(agent: Agent, prompt: str | list[object], max_attempts: int = 6):
+def _verbose_agent_runs_enabled() -> bool:
+    return os.getenv("AGENT_VERBOSE", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _render_tool_args(args: object, limit: int = 400) -> str:
+    rendered = str(args)
+    return rendered if len(rendered) <= limit else rendered[: limit - 3] + "..."
+
+
+def _render_tool_result_content(content: object, limit: int = 400) -> str:
+    rendered = str(content)
+    rendered = " ".join(rendered.split())
+    return rendered if len(rendered) <= limit else rendered[: limit - 3] + "..."
+
+
+def _merge_tool_args(existing: object, delta: object) -> object:
+    if delta is None:
+        return existing
+    if existing is None:
+        return delta
+    if isinstance(existing, str) and isinstance(delta, str):
+        return existing + delta
+    if isinstance(existing, dict) and isinstance(delta, dict):
+        merged = dict(existing)
+        for key, value in delta.items():
+            if key in merged and isinstance(merged[key], str) and isinstance(value, str):
+                merged[key] += value
+            else:
+                merged[key] = value
+        return merged
+    return delta
+
+
+def _format_multiline_block(text: str, *, max_lines: int = 20, max_chars: int = 1200) -> str:
+    trimmed = text[:max_chars]
+    lines = trimmed.splitlines()
+    visible = lines[:max_lines]
+    suffix = "\n    ..." if len(lines) > max_lines or len(text) > max_chars else ""
+    if not visible:
+        return "    <empty>"
+    return "\n".join(f"    {line}" for line in visible) + suffix
+
+
+def _render_tool_call_message(tool_name: str, args: object) -> str:
+    if isinstance(args, dict):
+        if tool_name == "code_execution":
+            meta = {k: v for k, v in args.items() if k != "code"}
+            parts = [tool_name]
+            if meta:
+                parts.append(f"  meta: {json.dumps(meta, ensure_ascii=False)}")
+            code = args.get("code")
+            if isinstance(code, str):
+                parts.append("  code:")
+                parts.append(_format_multiline_block(code))
+            return "\n".join(parts)
+
+        rendered = json.dumps(args, ensure_ascii=False)
+        return f"{tool_name} args={_render_tool_args(rendered)}"
+
+    if args is None:
+        return tool_name
+
+    return f"{tool_name} args={_render_tool_args(args)}"
+
+
+def build_terminal_event_stream_handler(agent_name: str):
+    state = {"open_section": None, "tool_parts": {}}
+
+    def _close_open_section() -> None:
+        if state["open_section"] is not None:
+            print("", file=sys.stderr, flush=True)
+            state["open_section"] = None
+
+    async def _handler(_, events) -> None:
+        async for event in events:
+            if isinstance(event, PartStartEvent):
+                part_kind = getattr(event.part, "part_kind", None)
+                if part_kind == "text":
+                    _close_open_section()
+                    print(f"[{agent_name}][text] ", end="", file=sys.stderr, flush=True)
+                    content = getattr(event.part, "content", "")
+                    if content:
+                        print(content, end="", file=sys.stderr, flush=True)
+                    state["open_section"] = "text"
+                elif part_kind == "thinking":
+                    _close_open_section()
+                    print(f"[{agent_name}][thinking] ", end="", file=sys.stderr, flush=True)
+                    content = getattr(event.part, "content", "")
+                    if content:
+                        print(content, end="", file=sys.stderr, flush=True)
+                    state["open_section"] = "thinking"
+                elif part_kind == "tool-call":
+                    _close_open_section()
+                    state["tool_parts"][event.index] = {
+                        "kind": "tool-call",
+                        "tool_name": getattr(event.part, "tool_name", "unknown"),
+                        "args": getattr(event.part, "args", None),
+                    }
+                    print(
+                        f"[{agent_name}][tool-call] {getattr(event.part, 'tool_name', 'unknown')}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                elif part_kind == "builtin-tool-call":
+                    _close_open_section()
+                    state["tool_parts"][event.index] = {
+                        "kind": "builtin-tool-call",
+                        "tool_name": getattr(event.part, "tool_name", "unknown"),
+                        "args": getattr(event.part, "args", None),
+                    }
+                    print(
+                        f"[{agent_name}][builtin-tool-call] {getattr(event.part, 'tool_name', 'unknown')}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                elif part_kind == "builtin-tool-return":
+                    _close_open_section()
+                    print(
+                        f"[{agent_name}][builtin-tool-result] "
+                        f"{_render_tool_result_content(getattr(event.part, 'content', None))}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+            elif isinstance(event, PartDeltaEvent):
+                delta_kind = getattr(event.delta, "part_delta_kind", None)
+                if delta_kind in {"text", "thinking"}:
+                    content_delta = getattr(event.delta, "content_delta", None)
+                    if content_delta:
+                        print(content_delta, end="", file=sys.stderr, flush=True)
+                        state["open_section"] = delta_kind
+                elif delta_kind == "tool_call":
+                    tool_name_delta = getattr(event.delta, "tool_name_delta", None)
+                    args_delta = getattr(event.delta, "args_delta", None)
+                    part_state = state["tool_parts"].setdefault(
+                        event.index,
+                        {"kind": "tool-call", "tool_name": "unknown", "args": None},
+                    )
+                    if tool_name_delta:
+                        part_state["tool_name"] = str(part_state.get("tool_name", "")) + tool_name_delta
+                    if args_delta is not None:
+                        part_state["args"] = _merge_tool_args(part_state.get("args"), args_delta)
+            elif isinstance(event, PartEndEvent):
+                part_kind = getattr(event.part, "part_kind", None)
+                if part_kind in {"text", "thinking"}:
+                    _close_open_section()
+                elif part_kind in {"tool-call", "builtin-tool-call"}:
+                    _close_open_section()
+                    part_state = state["tool_parts"].pop(event.index, None)
+                    tool_name = getattr(event.part, "tool_name", "unknown")
+                    args = getattr(event.part, "args", None)
+                    if part_state is not None:
+                        tool_name = part_state.get("tool_name", tool_name)
+                        args = part_state.get("args", args)
+                    print(
+                        f"[{agent_name}][{part_kind}-args] {_render_tool_call_message(tool_name, args)}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+            elif isinstance(event, FunctionToolCallEvent):
+                _close_open_section()
+                print(
+                    f"[{agent_name}][function-tool-call] {event.part.tool_name} "
+                    f"args={_render_tool_args(event.part.args)}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            elif isinstance(event, FunctionToolResultEvent):
+                _close_open_section()
+                result = event.result
+                print(
+                    f"[{agent_name}][function-tool-result] {getattr(result, 'tool_name', 'unknown')} "
+                    f"outcome={getattr(result, 'outcome', 'unknown')} "
+                    f"content={_render_tool_result_content(getattr(result, 'content', None))}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            elif isinstance(event, FinalResultEvent):
+                _close_open_section()
+                print(
+                    f"[{agent_name}][final-result] tool={event.tool_name or 'text'}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+
+    return _handler
+
+
+def run_agent_with_backoff(
+    agent: Agent,
+    prompt: str | list[object],
+    max_attempts: int = 6,
+    usage_limits: UsageLimits | None = None,
+):
     for attempt in range(max_attempts):
         try:
-            return agent.run_sync(prompt)
+            event_stream_handler = None
+            if _verbose_agent_runs_enabled():
+                agent_name = getattr(agent, "name", None) or "agent"
+                print(f"[{agent_name}] starting run (attempt {attempt + 1}/{max_attempts})", file=sys.stderr, flush=True)
+                event_stream_handler = build_terminal_event_stream_handler(agent_name)
+            return agent.run_sync(prompt, event_stream_handler=event_stream_handler, usage_limits=usage_limits)
         except ModelHTTPError as error:
             if error.status_code != 429 or attempt == max_attempts - 1:
                 raise
@@ -142,6 +351,12 @@ def run_agent_with_backoff(agent: Agent, prompt: str | list[object], max_attempt
             if isinstance(error.body, dict):
                 body_message = str(error.body.get("message", ""))
             wait_seconds = parse_retry_after_seconds(body_message, attempt + 1)
+            if _verbose_agent_runs_enabled():
+                print(
+                    f"[{getattr(agent, 'name', None) or 'agent'}] retrying after HTTP 429 in {wait_seconds:.1f}s",
+                    file=sys.stderr,
+                    flush=True,
+                )
             time.sleep(wait_seconds)
         except ModelAPIError as error:
             message = str(error)
@@ -149,4 +364,10 @@ def run_agent_with_backoff(agent: Agent, prompt: str | list[object], max_attempt
             if not is_connection_issue or attempt == max_attempts - 1:
                 raise
             wait_seconds = min(2**attempt, 10)
+            if _verbose_agent_runs_enabled():
+                print(
+                    f"[{getattr(agent, 'name', None) or 'agent'}] connection issue, retrying in {wait_seconds:.1f}s",
+                    file=sys.stderr,
+                    flush=True,
+                )
             time.sleep(wait_seconds)

@@ -194,9 +194,9 @@ def build_column_format_facts(df, column_name: str) -> ColumnFormatFacts:
 
         inconsistent_examples = select_outlier_examples(
             contaminated_values,
-            max_shapes=4,
-            max_per_shape=4,
-            max_total=12,
+            max_shapes=10,
+            max_per_shape=10,
+            max_total=60,
         )
 
         inconsistent_rows = len(contaminated_values)
@@ -239,9 +239,9 @@ def build_column_format_facts(df, column_name: str) -> ColumnFormatFacts:
         inconsistent_examples = select_outlier_examples(
             rendered,
             exclude_shape=dominant_shape,
-            max_shapes=6,
-            max_per_shape=3,
-            max_total=15,
+            max_shapes=10,
+            max_per_shape=10,
+            max_total=60,
         )
 
     if semantic_hint == "temporal_period":

@@ -110,7 +110,7 @@ def naming_rule_reason(name: str) -> str:
 
 
 # --- Profile Builders ---
-def build_dtype_inference_text(df, n_rows: int = 10) -> str:
+def build_dtype_inference_text(df, n_rows: int = 100) -> str:
     """Serialize the dataset into a column-by-column text profile for the dtype inference agent.
     Each line contains the column name, up to n_rows unique non-null sample values,
     and the numeric/datetime parse percentages computed over the full column.
