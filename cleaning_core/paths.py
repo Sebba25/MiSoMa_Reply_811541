@@ -23,6 +23,10 @@ def cleaner_manifest_path(path: Path) -> Path:
     return cleaning_cache_dir(path) / "cleaner_manifest.json"
 
 
+def final_report_path(path: Path) -> Path:
+    return cleaning_cache_dir(path) / f"{path.stem}.final_report.json"
+
+
 def save_cleaner_manifest(path: Path, artifacts: list[GeneratedCleanerArtifact]) -> None:
     manifest_path = cleaner_manifest_path(path)
     manifest_path.parent.mkdir(parents=True, exist_ok=True)

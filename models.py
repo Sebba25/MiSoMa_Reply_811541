@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -81,6 +81,18 @@ class SchemaHandoff(BaseModel):
 
 
 class SchemaSummaryOutput(BaseModel):
+    summary: str
+
+
+class AnomalySummaryOutput(BaseModel):
+    summary: str
+
+
+class CrossColumnSummaryOutput(BaseModel):
+    summary: str
+
+
+class DuplicateSummaryOutput(BaseModel):
     summary: str
 
 
@@ -175,6 +187,155 @@ class ConsistencyVerificationReport(BaseModel):
     summary: str
 
 
+# --- Anomaly Models ---
+
+class AnomalyFinding(BaseModel):
+    column_name: str
+    anomaly_type: Literal["numeric_outlier", "rare_category"]
+    severity: Literal["low", "medium", "high"]
+    affected_rows: int = Field(ge=0)
+    example_values: list[str] = Field(default_factory=list)
+    evidence: str
+    suggested_action: str
+
+
+class AnomalyDetectionReport(BaseModel):
+    dataset_name: str
+    total_rows: int = Field(ge=0)
+    total_columns: int = Field(ge=0)
+    findings: list[AnomalyFinding] = Field(default_factory=list)
+    summary: str = ""
+
+
+# --- Cross-Column Models ---
+
+class CrossColumnFinding(BaseModel):
+    columns: list[str] = Field(default_factory=list)
+    check_type: Literal[
+        "duplicate_semantic_conflict",
+        "exact_duplicate_columns",
+        "near_duplicate_columns",
+        "year_month_period_mismatch",
+        "date_order_violation",
+    ]
+    severity: Literal["medium", "high"]
+    affected_rows: int = Field(ge=0)
+    example_row_indices: list[int] = Field(default_factory=list)
+    similarity_pct: float | None = Field(default=None, ge=0, le=100)
+    evidence: str
+    suggested_action: str
+
+
+class CrossColumnValidationReport(BaseModel):
+    dataset_name: str
+    total_rows: int = Field(ge=0)
+    findings: list[CrossColumnFinding] = Field(default_factory=list)
+    summary: str = ""
+
+
+# --- Duplicate Detection Models ---
+
+class DuplicateRecordGroup(BaseModel):
+    duplicate_type: Literal["exact_row", "near_duplicate"]
+    row_indices: list[int] = Field(default_factory=list)
+    key_columns: list[str] = Field(default_factory=list)
+    evidence: str
+    suggested_action: str
+
+
+class DuplicateDetectionReport(BaseModel):
+    dataset_name: str
+    total_rows: int = Field(ge=0)
+    groups: list[DuplicateRecordGroup] = Field(default_factory=list)
+    summary: str = ""
+
+
+# --- Remediation Models ---
+
+REMEDIATION_ACTION_TYPE = Literal[
+    "rename_column",
+    "replace_placeholders_with_null",
+    "generate_cleaner",
+    "drop_exact_duplicate_column",
+    "cast_dtype",
+    "manual_review",
+    "report_only",
+    "drop_rows_candidate",
+]
+
+REMEDIATION_OBJECT_TYPE = Literal["column", "column_pair", "row_group", "dataset"]
+REMEDIATION_CONFIDENCE = Literal["low", "medium", "high"]
+REMEDIATION_RISK_LEVEL = Literal["low", "medium", "high"]
+REMEDIATION_STATUS = Literal["planned", "applied", "proposed_not_applied", "failed", "not_needed"]
+
+
+class RemediationAction(BaseModel):
+    action_id: str
+    action_type: REMEDIATION_ACTION_TYPE
+    object_type: REMEDIATION_OBJECT_TYPE
+    target: dict[str, Any] = Field(default_factory=dict)
+    source_check: str
+    confidence: REMEDIATION_CONFIDENCE
+    risk_level: REMEDIATION_RISK_LEVEL
+    auto_apply: bool
+    status: REMEDIATION_STATUS
+    reason: str
+    preview_stats: dict[str, Any] = Field(default_factory=dict)
+
+
+class RemediationPlan(BaseModel):
+    dataset_name: str
+    actions: list[RemediationAction] = Field(default_factory=list)
+    summary: str = ""
+
+
+class FinalPipelineReport(BaseModel):
+    dataset_name: str
+    validation_summary: dict[str, int] = Field(default_factory=dict)
+    applied_actions: list[RemediationAction] = Field(default_factory=list)
+    proposed_not_applied_actions: list[RemediationAction] = Field(default_factory=list)
+    failed_actions: list[RemediationAction] = Field(default_factory=list)
+    not_needed_actions: list[RemediationAction] = Field(default_factory=list)
+    duplicate_row_drop_candidates: list[RemediationAction] = Field(default_factory=list)
+    manual_review_queue: list[RemediationAction] = Field(default_factory=list)
+    cleaning_summary: str = ""
+    verification_summary: str = ""
+    unresolved_risks: list[str] = Field(default_factory=list)
+    summary: str = ""
+
+
+class NarrativeReportSection(BaseModel):
+    heading: str = Field(description="Section title, e.g. 'Validazione dello Schema'.")
+    body: str = Field(
+        description=(
+            "Markdown-formatted prose for this section. Must be detailed and evidence-rich: "
+            "include column names, row counts, percentages, concrete examples, and before/after comparisons. "
+            "Use markdown tables, bullet lists, and sub-headings where appropriate. "
+            "Minimum 150 words per section."
+        )
+    )
+
+
+class NarrativeReport(BaseModel):
+    title: str = Field(description="Report title including the dataset name.")
+    executive_summary: str = Field(
+        description=(
+            "A comprehensive executive summary (8-12 sentences). Cover: dataset dimensions, "
+            "overall quality posture, key findings by category, total actions applied vs. proposed, "
+            "verification outcome, and residual risk assessment."
+        )
+    )
+    sections: list[NarrativeReportSection] = Field(
+        min_length=8,
+        description="At least 8 sections covering all aspects of the quality analysis.",
+    )
+    recommendations: list[str] = Field(
+        default_factory=list,
+        min_length=3,
+        description="Prioritized list of actionable next steps for the data steward. At least 3 items.",
+    )
+
+
 # --- Cleaning Models ---
 
 class ColumnCleaningRequest(BaseModel):
@@ -221,13 +382,16 @@ class ColumnCleanerProgram(BaseModel):
 VALIDATION_FAILURE_CATEGORY = Literal[
     "program_mismatch",
     "verification_report_failed",
+    "non_self_contained_function",
     "runtime_exception",
     "shadowed_specific_branch",
     "dominant_value_modified",
     "outlier_unchanged",
     "outlier_returned_none",
+    "unrecoverable_outlier_not_nulled",
     "wrong_output_shape",
     "not_parseable_as_target_dtype",
+    "not_matching_target_pattern",
 ]
 
 
@@ -313,6 +477,9 @@ class OrchestrationStepResult(BaseModel):
     schema_validation: SchemaHandoff
     completeness_analysis: CompletenessAnalysisReport
     consistency_validation: ConsistencyValidationReport
+    anomaly_detection: AnomalyDetectionReport | None = None
+    cross_column_validation: CrossColumnValidationReport | None = None
+    duplicate_detection: DuplicateDetectionReport | None = None
 
 
 class CleaningPipelineResult(BaseModel):
@@ -320,7 +487,10 @@ class CleaningPipelineResult(BaseModel):
     source_path: str
     cleaned_path: str
     validation_results: OrchestrationStepResult
+    remediation_plan: RemediationPlan | None = None
     cleaning_requests: list[ColumnCleaningRequest] = Field(default_factory=list)
     generated_programs: list[ColumnCleanerProgram] = Field(default_factory=list)
     execution_reports: list[ColumnCleanerExecutionReport] = Field(default_factory=list)
     cleaning_report: CleaningReport
+    verification_report: ConsistencyVerificationReport | None = None
+    final_report: FinalPipelineReport | None = None

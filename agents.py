@@ -10,11 +10,15 @@ load_dotenv()
 from pydantic_ai import Agent, CodeExecutionTool, PromptedOutput
 
 from models import (
+    AnomalySummaryOutput,
     CleanerRepairDiagnosis,
     ColumnConsistencyReport,
     ColumnCleanerProgram,
     CompletenessAnalysisReport,
+    CrossColumnSummaryOutput,
     DatasetDtypeInference,
+    DuplicateSummaryOutput,
+    NarrativeReport,
     SchemaSummaryOutput,
 )
 
@@ -36,6 +40,7 @@ def setup_logfire() -> None:
 
 schema_summary_agent = Agent(
     MODEL,
+    name="schema-summary",
     output_type=PromptedOutput(SchemaSummaryOutput),
     retries=4,
     model_settings={"temperature": 0},
@@ -58,6 +63,7 @@ schema_summary_agent = Agent(
 
 dtype_inference_agent = Agent(
     MODEL,
+    name="dtype-inference",
     output_type=PromptedOutput(DatasetDtypeInference),
     retries=4,
     model_settings={"temperature": 0},
@@ -155,6 +161,7 @@ dtype_inference_agent = Agent(
 
 completeness_analysis_agent = Agent(
     MODEL,
+    name="completeness-analysis",
     builtin_tools=[CodeExecutionTool()],
     output_type=PromptedOutput(CompletenessAnalysisReport),
     retries=4,
@@ -184,6 +191,7 @@ completeness_analysis_agent = Agent(
 
 format_consistency_agent = Agent(
     MODEL,
+    name="format-consistency",
     output_type=PromptedOutput(ColumnConsistencyReport),
     retries=4,
     model_settings={"temperature": 0},
@@ -212,8 +220,60 @@ format_consistency_agent = Agent(
 )
 
 
+anomaly_summary_agent = Agent(
+    MODEL,
+    name="anomaly-summary",
+    output_type=PromptedOutput(AnomalySummaryOutput),
+    retries=4,
+    model_settings={"temperature": 0},
+    instructions=(
+        "You are the Anomaly Detection summary agent from the project orchestration. "
+        "Inspect the provided anomaly findings document and write a short, precise downstream summary. "
+        "Return valid JSON only that matches the AnomalySummaryOutput schema exactly. "
+        "Do not infer new anomalies, do not invent remediation beyond the provided findings, and do not use markdown. "
+        "Mention which columns carry the most severe or highest-volume anomalies, distinguish numeric outliers from rare-category findings, "
+        "and state clearly when no anomalies were found."
+    ),
+)
+
+
+cross_column_summary_agent = Agent(
+    MODEL,
+    name="cross-column-summary",
+    output_type=PromptedOutput(CrossColumnSummaryOutput),
+    retries=4,
+    model_settings={"temperature": 0},
+    instructions=(
+        "You are the Cross-Column Validation summary agent from the project orchestration. "
+        "Inspect the provided cross-column findings document and write a short, concrete summary for downstream review. "
+        "Return valid JSON only that matches the CrossColumnSummaryOutput schema exactly. "
+        "Do not infer new checks or facts, and do not use markdown. "
+        "Highlight the most severe conflicts, especially exact or near-duplicate columns, duplicate-semantic column disagreements, year-month-period mismatches, and date-order violations. "
+        "If there are no cross-column findings, say that explicitly."
+    ),
+)
+
+
+duplicate_summary_agent = Agent(
+    MODEL,
+    name="duplicate-summary",
+    output_type=PromptedOutput(DuplicateSummaryOutput),
+    retries=4,
+    model_settings={"temperature": 0},
+    instructions=(
+        "You are the Duplicate Detection summary agent from the project orchestration. "
+        "Inspect the provided duplicate-detection findings document and write a short, concrete summary. "
+        "Return valid JSON only that matches the DuplicateSummaryOutput schema exactly. "
+        "Do not infer new duplicates, do not use markdown, and do not suggest aggressive deletion without acknowledging uncertainty. "
+        "Mention the volume of exact duplicates, whether any near-duplicate groups were found, and which inferred key columns drive the near-duplicate signals. "
+        "If there are no duplicate groups, say that explicitly."
+    ),
+)
+
+
 column_cleaner_generator_agent = Agent(
     MODEL,
+    name="column-cleaner-generator",
     builtin_tools=[CodeExecutionTool()],
     output_type=PromptedOutput(ColumnCleanerProgram),
     retries=4,
@@ -245,6 +305,8 @@ column_cleaner_generator_agent = Agent(
         "FUNCTION CONTRACT:\n"
         "- One pure Python function, fully self-contained (all imports and helpers inside).\n"
         "- The final python_code must run if pasted into a fresh Python file with no surrounding variables. Do not rely on outer-scope names, uploaded files, request_data, or globals defined elsewhere.\n"
+        "- The final python_code must NEVER reference scratch variables from the testing block such as dominant, inconsistent, failed, request, request_data, previous_program, or validation_issues unless they are explicitly defined inside the function body.\n"
+        "- Variables created in the one-shot code execution block are scratchpad-only and must not appear in the final returned function unless they are redefined inside that function.\n"
         "- Input: any scalar — str, int, float, None, NaN. Output: str or None only.\n"
         "- Return None only for missing/empty input or truly unrecoverable values.\n"
         "- Return the value unchanged if it already matches expected_pattern.\n"
@@ -254,6 +316,7 @@ column_cleaner_generator_agent = Agent(
         "- suggested_strategy is the authoritative contract — implement a handler for every shape group it lists, no exceptions.\n"
         "- Prefer recovery over None: strip prefixes, expand abbreviations, extract embedded numbers. "
         "If a value contains any recoverable information, return it transformed — not None.\n"
+        "- If a value is invalid but unrecoverable for the target pattern, return None instead of inventing a best-guess correction.\n"
 
         "OUTPUT FORMAT BY TARGET DTYPE:\n"
         "- datetime64[ns]: string matching the EXACT strftime format seen in dominant_example_values.\n"
@@ -324,6 +387,7 @@ column_cleaner_generator_agent = Agent(
 
 cleaner_repair_critic_agent = Agent(
     MODEL,
+    name="cleaner-repair-critic",
     output_type=PromptedOutput(CleanerRepairDiagnosis),
     retries=4,
     model_settings={"temperature": 0},
@@ -342,6 +406,7 @@ cleaner_repair_critic_agent = Agent(
 
         "DECISION RULES:\n"
         "- Treat host-side validation issues as ground truth.\n"
+        "- If primary_category is non_self_contained_function, treat it as a code-construction/scoping failure, not a cleaning-rule failure.\n"
         "- If any dominant valid example was modified, prioritize that over outlier handling.\n"
         "- If the issues are localized to one guard, one branch, or one formatting decision, choose patch_style='minimal_edit'.\n"
         "- Use patch_style='targeted_rewrite' only when multiple failure categories show the function structure is wrong.\n"
@@ -351,6 +416,7 @@ cleaner_repair_critic_agent = Agent(
 
         "FIELD RULES:\n"
         "- primary_category: choose the most important validation category to fix first.\n"
+        "- For non_self_contained_function, root_cause and bug_location should explicitly mention the undefined name or outer-scope dependency and tell the generator to inline or redefine that data inside the function.\n"
         "- root_cause: one concise diagnosis grounded in the issues and anchored in at least one concrete failing input/output pair when possible.\n"
         "- bug_location: describe the failing logical area, such as 'already-valid timestamp guard' or 'currency stripping branch'.\n"
         "- planned_fix: concrete and operational, suitable for the next generator prompt; mention the exact transformation direction that should change when the issue is localized.\n"
@@ -362,5 +428,102 @@ cleaner_repair_critic_agent = Agent(
         "OUTPUT:\n"
         "- Return JSON matching CleanerRepairDiagnosis exactly.\n"
         "- No markdown, no code, no follow-up questions."
+    ),
+)
+
+
+narrative_report_agent = Agent(
+    MODEL,
+    name="narrative-report",
+    output_type=PromptedOutput(NarrativeReport),
+    retries=4,
+    model_settings={"temperature": 0.3},
+    instructions=(
+        "You are the Narrative Report Writer agent for the NoiPA dataset quality pipeline. "
+        "NoiPA is the digital platform of the Italian Ministry of Economy and Finance (MEF) that manages salaries, "
+        "timesheets, and tax/social-security obligations for employees of the Italian Public Administration.\n\n"
+
+        "You receive a structured quality briefing derived from the pipeline's validation, remediation, "
+        "cleaning, and verification stages. Produce an EXHAUSTIVE, professional, human-readable quality "
+        "report in ENGLISH that a data steward, project manager, or auditor can use as a definitive "
+        "reference document.\n\n"
+
+        "MANDATORY SECTIONS (use these exact English headings):\n\n"
+
+        "1. 'Dataset Overview' — Dataset name, total rows, total columns (original and after cleaning). "
+        "Overall quality posture: total findings, actions applied, actions deferred to manual review. "
+        "State the cleaned output file path.\n\n"
+
+        "2. 'Schema Validation' — Two subsections:\n"
+        "   a) 'Column Renames': list EVERY column rename as a markdown table with columns: Original Name | New Name | Reason.\n"
+        "   b) 'Type Casts': list EVERY dtype cast as a markdown table with columns: Column | Assigned Type | % Non-Null. "
+        "   Compute % Non-Null as (non-null count / total rows * 100) rounded to one decimal. "
+        "   Use TOTAL ROWS from the briefing header. If total rows is unavailable, compute from the cleaning summary. "
+        "   Mention any casts that were planned but marked not_needed and why.\n\n"
+
+        "3. 'Completeness Analysis' — For EACH column where placeholders were replaced, state: "
+        "the column name, how many placeholder values were found, which placeholder tokens were detected "
+        "(list the actual examples like 'n.d.', '-', '//', '?', 'unknown', empty string), "
+        "and that they were replaced with null. Use a markdown table. "
+        "Also mention columns where placeholder replacement was planned but not needed.\n\n"
+
+        "4. 'Format Consistency' — THIS IS WHERE THE MAJOR INCONSISTENCIES WERE FOUND AND FIXED. "
+        "Begin with a one-sentence summary of how many columns had format issues. "
+        "Then for EACH column where a cleaner was generated, use this EXACT structured format:\n"
+        "### column_name\n"
+        "- **Expected Pattern:** …\n"
+        "- **Inconsistent Rows:** N\n"
+        "- **Examples of bad values:** 'val1', 'val2', 'val3'\n"
+        "- **Transformation applied:** …\n"
+        "- **Clean example:** 'bad_value' → 'clean_value'\n"
+        "- **Outcome:** Fixed / Mostly Fixed / Unchanged / Regression\n\n"
+        "Use 'Fixed' when fully resolved, 'Mostly Fixed' when substantially improved with residual issues, "
+        "'Unchanged' when no improvement, 'Regression' when worse. "
+        "Never collapse multiple columns into a single paragraph — each gets its own ### heading and bullet list.\n\n"
+
+        "5. 'Anomaly Detection' — Cover numeric outliers and rare categories separately. "
+        "For numeric outliers: state the column, the IQR band, how many rows fall outside it, concrete extreme examples. "
+        "For rare categories: state the column, how many rare values, their frequency threshold. "
+        "Explain why these were flagged for manual review rather than auto-corrected.\n\n"
+
+        "6. 'Cross-Column Checks' — Cover each type of cross-column finding:\n"
+        "   a) Exact duplicate columns: which pair, which was kept, which was dropped, and why.\n"
+        "   b) Near-duplicate columns: list each pair with similarity % and mismatch count in a markdown table.\n"
+        "   c) Semantic conflicts: which columns conflict, on how many rows.\n\n"
+
+        "7. 'Row Duplicate Analysis' — State how many exact duplicate row groups were found, "
+        "total rows affected, give 2-3 concrete examples (row indices), explain why they were NOT "
+        "auto-removed (conservative policy). For near-duplicate rows: how many groups, which key columns "
+        "were used for matching, and why manual review is required.\n\n"
+
+        "8. 'Remediation Action Summary' — Provide a complete accounting:\n"
+        "   a) Summary counts: Applied, Failed, Not Needed. DO NOT list 'Proposed Not Applied' as a headline count — "
+        "      those are included in the manual review queue and discussed in section 10.\n"
+        "   b) Breakdown by action type (markdown table): Action Type | Applied | Failed | Not Needed.\n"
+        "   c) Briefly explain the auto-apply policy: what is safe to auto-apply and what requires human review.\n\n"
+
+        "9. 'Verification Outcome' — This section reports which format inconsistencies were cleaned and to what degree. "
+        "Report the verification results: how many consistency findings were resolved, mostly fixed, unchanged, or regressed. "
+        "List each column with its Before status and After status using the labels: "
+        "Fixed / Mostly Fixed / Unchanged / Regression. "
+        "Explain what 'Fixed' means (inconsistent rows now conform to the expected pattern).\n\n"
+
+        "10. 'Residual Risks & Manual Review Queue' — List ALL items requiring manual review: "
+        "near-duplicate columns, semantic conflicts, near-duplicate rows, numeric outliers, proposed-not-applied actions. "
+        "For each, state what action is needed and why it was not automated. "
+        "If there are no unresolved risks from cleaning, state that explicitly.\n\n"
+
+        "STYLE RULES:\n"
+        "- Write in clear, professional English suitable for institutional documentation.\n"
+        "- Every claim must cite concrete data from the briefing: column names, row counts, percentages, example values.\n"
+        "- Use markdown tables for structured data (renames, casts, placeholders, near-duplicate pairs).\n"
+        "- Use bullet lists for enumerated findings.\n"
+        "- Each section body must be at least 150 words — this is an exhaustive report, not a summary.\n"
+        "- The executive_summary must be 8-12 sentences and readable standalone, in English.\n"
+        "- Do not invent facts not present in the input document.\n"
+        "- Do not use generic filler phrases — every sentence must carry information.\n"
+        "- recommendations must contain at least 5 actionable, prioritized items in English.\n\n"
+
+        "OUTPUT: valid JSON matching NarrativeReport exactly. No raw markdown outside the JSON fields."
     ),
 )

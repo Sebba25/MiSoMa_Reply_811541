@@ -4,23 +4,43 @@ import argparse
 import json
 import os
 from pathlib import Path
+from typing import Any, Callable
 
 from dotenv import load_dotenv
 
 from agents import setup_logfire
-from cleaning import run_cleaner_application, run_cleaner_generation, run_cleaning, run_verify
+from cleaning import run_cleaner_application, run_cleaner_generation, run_cleaning, run_remediation_planning, run_verify
+from cleaning_core.reporting import generate_narrative_report, save_narrative_report
 from pipeline import (
     build_validation_results,
     run_completeness_analysis,
-    run_consistency_validation,
     run_dtype_inference,
     run_format_consistency_validation,
     run_schema_validation,
 )
 
+VISIBLE_STAGES = (
+    "validate",
+    "dtype",
+    "schema",
+    "completeness",
+    "consistency",
+    "remediate",
+    "generate",
+    "apply",
+    "verify",
+    "clean",
+    "report",
+)
+
+STAGE_ALIASES = {
+    "all": "validate",
+    "pipeline": "clean",
+}
+
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run the Pydantic AI dataset validation agents.")
+    parser = argparse.ArgumentParser(description="Run the dataset validation and cleaning pipeline.")
     parser.add_argument(
         "dataset",
         nargs="?",
@@ -29,35 +49,44 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--stage",
-        choices=["all", "dtype", "schema", "completeness", "consistency", "clean", "generate", "apply", "verify", "pipeline"],
-        default="all",
-        help="Which top-level stage to run. Defaults to all.",
+        default="validate",
+        metavar="{" + ",".join(VISIBLE_STAGES) + "}",
+        help=(
+            "Top-level stage. Use 'validate' to build the validation bundle, 'remediate' "
+            "to build the remediation plan, and 'clean' for the full remediation/generate/apply/verify flow. Legacy aliases: 'all' -> 'validate', "
+            "'pipeline' -> 'clean'."
+        ),
     )
     parser.add_argument(
         "--consistency-agent",
         choices=["all", "format"],
         default="all",
-        help="When --stage consistency is used, choose which consistency sub-agent to run. Defaults to all.",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--reuse-schema",
         action="store_true",
-        help="Load schema handoff from .validation_cache instead of re-running dtype inference and schema agents.",
+        help="Load schema handoff from the dataset-adjacent .validation_cache directory instead of re-running it.",
     )
     parser.add_argument(
         "--reuse-completeness",
         action="store_true",
-        help="Load completeness analysis from .validation_cache instead of re-running.",
+        help="Load completeness analysis from the dataset-adjacent .validation_cache directory instead of re-running it.",
     )
     parser.add_argument(
         "--reuse-consistency",
         action="store_true",
-        help="Load consistency validation from .validation_cache instead of re-running.",
+        help="Load consistency validation from the dataset-adjacent .validation_cache directory instead of re-running it.",
     )
     parser.add_argument(
         "--reuse-validation",
         action="store_true",
-        help="Reuse saved validation bundle from .validation_cache when running the cleaning stage.",
+        help="Reuse the saved validation bundle from the dataset-adjacent .validation_cache directory for clean/pipeline.",
+    )
+    parser.add_argument(
+        "--reuse-remediation",
+        action="store_true",
+        help="Reuse the saved remediation plan from the dataset-adjacent .validation_cache directory for remediate/clean.",
     )
     parser.add_argument(
         "--verbose",
@@ -71,10 +100,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--cleaner-attempts",
         type=int,
-        default=5,
-        help="Maximum generator/critic attempts per column during cleaner generation. Defaults to 5.",
+        default=10,
+        help="Maximum generator/critic attempts per column during cleaner generation. Defaults to 10.",
     )
     return parser
+
+
+def normalize_stage(stage: str) -> str:
+    normalized = stage.strip().lower()
+    normalized = STAGE_ALIASES.get(normalized, normalized)
+    if normalized not in VISIBLE_STAGES:
+        supported = ", ".join(VISIBLE_STAGES)
+        raise ValueError(f"Unknown stage {stage!r}. Supported stages: {supported}.")
+    return normalized
 
 
 def print_dtype_inference(dataset_path: Path) -> None:
@@ -98,47 +136,7 @@ def print_dtype_inference(dataset_path: Path) -> None:
         )
 
 
-def run_stage(args: argparse.Namespace, dataset_path: Path):
-    if args.stage == "dtype":
-        print_dtype_inference(dataset_path)
-        raise SystemExit(0)
-    if args.stage == "schema":
-        return run_schema_validation(dataset_path, reuse_cache=args.reuse_schema)
-    if args.stage == "completeness":
-        return run_completeness_analysis(dataset_path, reuse_cache=args.reuse_completeness)
-    if args.stage == "consistency":
-        if args.consistency_agent == "format":
-            return run_format_consistency_validation(dataset_path, reuse_cache=args.reuse_consistency)
-        return run_consistency_validation(dataset_path, reuse_cache=args.reuse_consistency)
-    if args.stage == "clean":
-        return run_cleaning(
-            dataset_path,
-            reuse_saved_validation=args.reuse_validation,
-            cleaner_attempts=args.cleaner_attempts,
-        )
-    if args.stage == "generate":
-        return run_cleaner_generation(
-            dataset_path,
-            reuse_consistency=args.reuse_consistency,
-            column_name=args.column,
-            max_attempts=args.cleaner_attempts,
-        )
-    if args.stage == "apply":
-        return run_cleaner_application(dataset_path)
-    if args.stage == "verify":
-        return run_verify(dataset_path)
-    if args.stage == "pipeline":
-        run_schema_validation(dataset_path)
-        run_completeness_analysis(dataset_path)
-        run_format_consistency_validation(dataset_path)
-        run_cleaner_generation(
-            dataset_path,
-            reuse_consistency=True,
-            max_attempts=args.cleaner_attempts,
-        )
-        run_cleaner_application(dataset_path)
-        return run_verify(dataset_path)
-
+def run_validation_bundle(args: argparse.Namespace, dataset_path: Path):
     return build_validation_results(
         dataset_path,
         reuse_schema=args.reuse_schema,
@@ -147,13 +145,78 @@ def run_stage(args: argparse.Namespace, dataset_path: Path):
     )
 
 
+def run_narrative_report(args: argparse.Namespace, dataset_path: Path):
+    from cleaning_core.paths import final_report_path
+    from models import FinalPipelineReport
+
+    report_path = final_report_path(dataset_path)
+    if not report_path.exists():
+        raise SystemExit(
+            f"Final report not found at {report_path}. Run --stage clean first."
+        )
+    final_report = FinalPipelineReport.model_validate_json(
+        report_path.read_text(encoding="utf-8")
+    )
+    narrative = generate_narrative_report(final_report)
+    output_path = save_narrative_report(dataset_path, narrative)
+    import sys as _sys
+    _sys.stdout.buffer.write(output_path.read_bytes())
+    _sys.stdout.buffer.write(b"\n")
+    return narrative
+
+
+def run_stage(args: argparse.Namespace, dataset_path: Path):
+    if args.stage == "dtype":
+        print_dtype_inference(dataset_path)
+        raise SystemExit(0)
+
+    stage_handlers: dict[str, Callable[[argparse.Namespace, Path], Any]] = {
+        "validate": run_validation_bundle,
+        "schema": lambda parsed_args, path: run_schema_validation(path, reuse_cache=parsed_args.reuse_schema),
+        "completeness": lambda parsed_args, path: run_completeness_analysis(path, reuse_cache=parsed_args.reuse_completeness),
+        "consistency": lambda parsed_args, path: run_format_consistency_validation(path, reuse_cache=parsed_args.reuse_consistency),
+        "remediate": lambda parsed_args, path: run_remediation_planning(
+            path,
+            reuse_saved_validation=parsed_args.reuse_validation,
+            reuse_saved_remediation=parsed_args.reuse_remediation,
+        ),
+        "clean": lambda parsed_args, path: run_cleaning(
+            path,
+            reuse_saved_validation=parsed_args.reuse_validation,
+            reuse_saved_remediation=parsed_args.reuse_remediation,
+            cleaner_attempts=parsed_args.cleaner_attempts,
+        ),
+        "generate": lambda parsed_args, path: run_cleaner_generation(
+            path,
+            reuse_consistency=parsed_args.reuse_consistency,
+            column_name=parsed_args.column,
+            max_attempts=parsed_args.cleaner_attempts,
+        ),
+        "apply": lambda parsed_args, path: run_cleaner_application(path),
+        "verify": lambda parsed_args, path: run_verify(path),
+        "report": run_narrative_report,
+    }
+    return stage_handlers[args.stage](args, dataset_path)
+
+
 def print_result(result) -> None:
+    def _strip_large_payloads(value):
+        if isinstance(value, dict):
+            stripped = {}
+            for key, item in value.items():
+                if key == "cleaned_csv_gzip_base64":
+                    continue
+                stripped[key] = _strip_large_payloads(item)
+            return stripped
+        if isinstance(value, list):
+            return [_strip_large_payloads(item) for item in value]
+        return value
+
     if isinstance(result, list):
-        print(json.dumps([entry.model_dump() for entry in result], ensure_ascii=False, indent=2))
+        print(json.dumps(_strip_large_payloads([entry.model_dump() for entry in result]), ensure_ascii=False, indent=2))
         return
 
-    dump = result.model_dump()
-    dump.pop("cleaned_csv_gzip_base64", None)
+    dump = _strip_large_payloads(result.model_dump())
     print(json.dumps(dump, ensure_ascii=False, indent=2))
 
 
@@ -161,6 +224,10 @@ def main() -> None:
     load_dotenv()
     parser = build_parser()
     args = parser.parse_args()
+    try:
+        args.stage = normalize_stage(args.stage)
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
 
     if args.verbose:
         os.environ["AGENT_VERBOSE"] = "1"

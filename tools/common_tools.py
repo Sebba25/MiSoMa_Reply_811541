@@ -117,7 +117,12 @@ def compute_datetime_parse_pct(series: pd.Series) -> float:
     if rendered.empty:
         return 0.0
 
-    signal_mask = rendered.str.contains(r"[-/:T ]", regex=True)
+    signal_mask = (
+        rendered.str.contains(r"\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}", regex=True)
+        | rendered.str.contains(r"\d{4}-\d{2}-\d{2}T\d", regex=True)
+        | rendered.str.contains(r"[A-Za-z]{3,}\s+\d{1,2}\s+\d{2,4}", regex=True)
+        | rendered.str.contains(r"\d{1,2}\s+[A-Za-z]{3,}\s+\d{2,4}", regex=True)
+    )
     candidates = rendered[signal_mask]
     if candidates.empty:
         return 0.0
@@ -132,6 +137,89 @@ def compute_empty_like_pct(series: pd.Series) -> float:
     rendered = series.fillna("").astype(str).str.strip().str.lower()
     empty_like = rendered.isin(PLACEHOLDER_TOKENS)
     return float((empty_like.mean()) * 100)
+
+
+def _normalized_pattern(pattern: str | None) -> str:
+    return (pattern or "").strip().lower()
+
+
+def _matches_generic_digit_count(value: str, pattern: str) -> bool | None:
+    match = re.search(r"(\d+)-digit", pattern)
+    if not match:
+        return None
+    digits = int(match.group(1))
+    return bool(re.fullmatch(rf"\d{{{digits}}}", value))
+
+
+def matches_numeric_schema_pattern(
+    value: str,
+    *,
+    pandas_dtype: str | None = None,
+    numeric_role: str | None = None,
+    detected_pattern: str | None = None,
+) -> bool | None:
+    stripped = value.strip()
+    if not stripped:
+        return False
+
+    pattern = _normalized_pattern(detected_pattern)
+
+    if pattern == "month number (1-12)":
+        return bool(re.fullmatch(r"(?:[1-9]|1[0-2])", stripped))
+
+    if pattern == "4-digit year":
+        return bool(re.fullmatch(r"\d{4}", stripped))
+
+    if pattern == "yyyymm":
+        return bool(re.fullmatch(r"\d{6}", stripped)) and 1 <= int(stripped[4:6]) <= 12
+
+    generic_digit_match = _matches_generic_digit_count(stripped, pattern)
+    if generic_digit_match is not None:
+        return generic_digit_match
+
+    if pattern in {"integer count", "integer code"}:
+        return bool(re.fullmatch(r"\d+", stripped))
+
+    if pandas_dtype == "Int64":
+        if numeric_role in {"code", "indicator"}:
+            return bool(re.fullmatch(r"\d+", stripped))
+        if numeric_role == "measure":
+            return bool(re.fullmatch(r"-?\d+", stripped))
+        return bool(re.fullmatch(r"-?\d+", stripped))
+
+    if pandas_dtype == "Float64":
+        return bool(re.fullmatch(r"-?\d+(?:\.\d+)?", stripped))
+
+    return None
+
+
+def numeric_pattern_allows_variable_width(
+    *,
+    pandas_dtype: str | None = None,
+    numeric_role: str | None = None,
+    detected_pattern: str | None = None,
+) -> bool:
+    pattern = _normalized_pattern(detected_pattern)
+
+    if pattern in {"4-digit year", "yyyymm"}:
+        return False
+
+    if re.search(r"(\d+)-digit", pattern):
+        return False
+
+    if pattern == "month number (1-12)":
+        return True
+
+    if pattern in {"integer count", "integer code"}:
+        return True
+
+    if pandas_dtype == "Float64":
+        return True
+
+    if pandas_dtype == "Int64" and numeric_role == "measure":
+        return True
+
+    return False
 
 
 # Agent Runtime Helpers

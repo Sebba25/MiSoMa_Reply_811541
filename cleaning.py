@@ -28,11 +28,14 @@ from cleaning_core.paths import (
     cleaned_dataset_path,
     cleaner_manifest_path,
     cleaning_cache_dir,
+    final_report_path,
     generated_cleaner_path,
     load_cleaner_manifest,
     save_cleaner_manifest,
     save_generated_cleaner,
 )
+from cleaning_core.remediation import run_remediation_planning
+from cleaning_core.reporting import build_final_report, generate_narrative_report, save_final_report, save_narrative_report
 from cleaning_core.request import build_column_cleaning_request
 from cleaning_core.runtime import (
     apply_cleaner_to_series as _apply_cleaner_to_series,
@@ -47,15 +50,21 @@ __all__ = [
     "cleaned_dataset_path",
     "cleaner_manifest_path",
     "cleaning_cache_dir",
+    "final_report_path",
     "generated_cleaner_path",
     "load_cleaner_callable",
     "load_cleaner_manifest",
+    "build_final_report",
     "run_cleaner_application",
     "run_cleaner_generation",
     "run_cleaner_repair_critic",
     "run_cleaning",
+    "run_remediation_planning",
     "run_column_cleaner_program",
     "run_verify",
+    "generate_narrative_report",
+    "save_final_report",
+    "save_narrative_report",
     "save_cleaner_manifest",
     "save_generated_cleaner",
 ]

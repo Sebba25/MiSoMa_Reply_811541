@@ -6,8 +6,15 @@ from typing import Any
 
 import pandas as pd
 
-from cache import load_completeness, load_schema_handoff
-from models import CleaningReport, ColumnCleanerExecutionReport, ColumnCleanerProgram, GeneratedCleanerArtifact
+from cache import load_completeness, load_remediation_plan, load_schema_handoff, save_remediation_plan
+from models import (
+    CleaningReport,
+    ColumnCleanerExecutionReport,
+    ColumnCleanerProgram,
+    GeneratedCleanerArtifact,
+    RemediationAction,
+    RemediationPlan,
+)
 from tools.tools import gzip_text_to_base64, load_dataset_frame
 
 from .paths import cleaned_dataset_path, cleaning_cache_dir, load_cleaner_manifest, save_cleaner_manifest
@@ -48,14 +55,15 @@ def _apply_column_renames(df: pd.DataFrame, path: Path) -> tuple[pd.DataFrame, d
     return df, rename_map
 
 
-def _apply_placeholder_nulls(df: pd.DataFrame, path: Path) -> tuple[pd.DataFrame, int]:
+def _apply_placeholder_nulls(df: pd.DataFrame, path: Path) -> tuple[pd.DataFrame, int, dict[str, int]]:
     try:
         completeness = load_completeness(path)
     except FileNotFoundError:
         print("[apply] completeness cache not found - skipping placeholder replacement.", file=sys.stderr)
-        return df, 0
+        return df, 0, {}
 
     total_replaced = 0
+    replaced_by_column: dict[str, int] = {}
     for column_finding in completeness.per_column:
         column_name = column_finding.column_name
         if column_name not in df.columns or not column_finding.missing_like_examples:
@@ -74,9 +82,10 @@ def _apply_placeholder_nulls(df: pd.DataFrame, path: Path) -> tuple[pd.DataFrame
         if count > 0:
             df.loc[mask, column_name] = pd.NA
             total_replaced += count
+            replaced_by_column[column_name] = count
             print(f"  '{column_name}': {count} placeholder values -> null", file=sys.stderr)
 
-    return df, total_replaced
+    return df, total_replaced, replaced_by_column
 
 
 def _coerce_boolean(value: object) -> object:
@@ -88,12 +97,12 @@ def _coerce_boolean(value: object) -> object:
     return pd.NA
 
 
-def _apply_dtype_casts(df: pd.DataFrame, path: Path) -> pd.DataFrame:
+def _apply_dtype_casts(df: pd.DataFrame, path: Path) -> tuple[pd.DataFrame, dict[str, str]]:
     try:
         handoff = load_schema_handoff(path)
     except FileNotFoundError:
         print("  schema cache not found - skipping dtype casts.", file=sys.stderr)
-        return df
+        return df, {}
 
     rename_map = {
         column.name: column.rename_suggestion
@@ -107,6 +116,7 @@ def _apply_dtype_casts(df: pd.DataFrame, path: Path) -> pd.DataFrame:
             schema_by_current[current_name] = column
 
     cast_ok, cast_fail = 0, 0
+    cast_results: dict[str, str] = {}
     for column_name, schema_column in schema_by_current.items():
         target = schema_column.pandas_dtype
         try:
@@ -124,22 +134,26 @@ def _apply_dtype_casts(df: pd.DataFrame, path: Path) -> pd.DataFrame:
                     df[column_name] = numeric.astype("Float64")
                     print(f"  '{column_name}' -> Float64", file=sys.stderr)
                 cast_ok += 1
+                cast_results[column_name] = "applied"
                 continue
             elif target == "boolean":
                 df[column_name] = df[column_name].map(_coerce_boolean).astype("boolean")
             elif target == "string":
                 df[column_name] = df[column_name].where(df[column_name].notna(), pd.NA).astype("string")
             else:
+                cast_results[column_name] = "not_needed"
                 continue
 
             print(f"  '{column_name}' -> {target}", file=sys.stderr)
             cast_ok += 1
+            cast_results[column_name] = "applied"
         except Exception as error:
             print(f"  '{column_name}' cast to {target} SKIPPED: {error}", file=sys.stderr)
             cast_fail += 1
+            cast_results[column_name] = "failed"
 
     print(f"  {cast_ok} columns cast successfully, {cast_fail} skipped.", file=sys.stderr)
-    return df
+    return df, cast_results
 
 
 def _load_artifact_program(artifact: GeneratedCleanerArtifact) -> ColumnCleanerProgram | None:
@@ -156,8 +170,59 @@ def _load_artifact_program(artifact: GeneratedCleanerArtifact) -> ColumnCleanerP
     )
 
 
-def run_cleaner_application(path: Path) -> CleaningReport:
-    artifacts = load_cleaner_manifest(path)
+def _clone_remediation_plan(remediation_plan: RemediationPlan | None) -> RemediationPlan | None:
+    if remediation_plan is None:
+        return None
+    return remediation_plan.model_copy(deep=True)
+
+
+def _apply_exact_duplicate_column_drops(
+    df: pd.DataFrame,
+    actions: list[RemediationAction],
+) -> tuple[pd.DataFrame, list[str]]:
+    unresolved_risks: list[str] = []
+    for action in actions:
+        if action.action_type != "drop_exact_duplicate_column" or not action.auto_apply:
+            continue
+
+        keep_column = str(action.target.get("keep_column", ""))
+        drop_column = str(action.target.get("drop_column", ""))
+        if not keep_column or not drop_column or keep_column == drop_column:
+            action.status = "not_needed"
+            continue
+        if drop_column not in df.columns:
+            action.status = "not_needed"
+            continue
+        if keep_column not in df.columns:
+            action.status = "failed"
+            unresolved_risks.append(
+                f"Could not drop duplicate column {drop_column!r} because keep column {keep_column!r} is missing."
+            )
+            continue
+
+        df = df.drop(columns=[drop_column])
+        action.status = "applied"
+        print(f"  dropped exact duplicate column '{drop_column}' (kept '{keep_column}')", file=sys.stderr)
+
+    return df, unresolved_risks
+
+
+def run_cleaner_application_with_plan(
+    path: Path,
+    remediation_plan: RemediationPlan | None = None,
+) -> tuple[CleaningReport, list[ColumnCleanerExecutionReport], RemediationPlan | None]:
+    if remediation_plan is None:
+        try:
+            remediation_plan = load_remediation_plan(path)
+        except FileNotFoundError:
+            remediation_plan = None
+    remediation_plan = _clone_remediation_plan(remediation_plan)
+    actions = remediation_plan.actions if remediation_plan is not None else []
+
+    try:
+        artifacts = load_cleaner_manifest(path)
+    except FileNotFoundError:
+        artifacts = []
     df = load_dataset_frame(path)
     rows_before = len(df)
     columns_before = len(df.columns)
@@ -166,6 +231,8 @@ def run_cleaner_application(path: Path) -> CleaningReport:
     unresolved_risks: list[str] = []
 
     print(f"\n[apply] step 1 - format cleaners ({len(artifacts)} columns)", file=sys.stderr)
+    if not artifacts:
+        print("  no cleaner manifest found or no generated cleaners recorded.", file=sys.stderr)
     for artifact in artifacts:
         program = _load_artifact_program(artifact)
         if program is None:
@@ -195,6 +262,18 @@ def run_cleaner_application(path: Path) -> CleaningReport:
             )
         )
 
+    execution_by_column = {report.column_name: report for report in execution_reports}
+    for action in actions:
+        if action.action_type != "generate_cleaner":
+            continue
+        report = execution_by_column.get(str(action.target.get("column_name", "")))
+        if report is None:
+            action.status = "failed"
+        elif report.execution_ok:
+            action.status = "applied"
+        else:
+            action.status = "failed"
+
     failed = [report for report in execution_reports if not report.execution_ok]
     print(
         f"\n  execution summary: {len(execution_reports) - len(failed)}/{len(execution_reports)} succeeded"
@@ -203,14 +282,43 @@ def run_cleaner_application(path: Path) -> CleaningReport:
     )
 
     print("\n[apply] step 2 - placeholder -> null (from completeness cache)", file=sys.stderr)
-    df, total_replaced = _apply_placeholder_nulls(df, path)
+    df, total_replaced, placeholder_by_column = _apply_placeholder_nulls(df, path)
     print(f"  total placeholder replacements: {total_replaced}", file=sys.stderr)
+    for action in actions:
+        if action.action_type != "replace_placeholders_with_null":
+            continue
+        column_name = str(action.target.get("column_name", ""))
+        action.status = "applied" if placeholder_by_column.get(column_name, 0) > 0 else "not_needed"
 
-    print("\n[apply] step 3 - column renames (from schema cache)", file=sys.stderr)
+    print("\n[apply] step 3 - exact duplicate column drops (from remediation plan)", file=sys.stderr)
+    if actions:
+        df, drop_risks = _apply_exact_duplicate_column_drops(df, actions)
+        unresolved_risks.extend(drop_risks)
+    else:
+        print("  no remediation plan loaded - skipping exact duplicate column drops.", file=sys.stderr)
+
+    print("\n[apply] step 4 - column renames (from schema cache)", file=sys.stderr)
     df, rename_map = _apply_column_renames(df, path)
+    for action in actions:
+        if action.action_type != "rename_column":
+            continue
+        column_name = str(action.target.get("column_name", ""))
+        new_name = str(action.target.get("new_name", ""))
+        if rename_map.get(column_name) == new_name:
+            action.status = "applied"
+        elif column_name not in df.columns:
+            action.status = "not_needed"
+        else:
+            action.status = "not_needed"
 
-    print("\n[apply] step 4 - dtype casting (from schema cache)", file=sys.stderr)
-    df = _apply_dtype_casts(df, path)
+    print("\n[apply] step 5 - dtype casting (from schema cache)", file=sys.stderr)
+    df, cast_results = _apply_dtype_casts(df, path)
+    for action in actions:
+        if action.action_type != "cast_dtype":
+            continue
+        column_name = str(action.target.get("column_name", ""))
+        status = cast_results.get(column_name, "not_needed")
+        action.status = status if status in {"applied", "failed"} else "not_needed"
 
     output_dir = cleaning_cache_dir(path)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -219,8 +327,10 @@ def run_cleaner_application(path: Path) -> CleaningReport:
     print(f"\n[apply] cleaned dataset saved -> {cleaned_path}", file=sys.stderr)
 
     save_cleaner_manifest(path, applied_artifacts)
+    if remediation_plan is not None:
+        save_remediation_plan(path, remediation_plan)
 
-    return CleaningReport(
+    cleaning_report = CleaningReport(
         dataset_name=path.stem,
         rows_before=rows_before,
         rows_after=len(df),
@@ -234,4 +344,9 @@ def run_cleaner_application(path: Path) -> CleaningReport:
             f"renamed {len(rename_map)} columns, and cast dtypes. Cleaned dataset saved to {cleaned_path}."
         ),
     )
+    return cleaning_report, execution_reports, remediation_plan
 
+
+def run_cleaner_application(path: Path) -> CleaningReport:
+    cleaning_report, _, _ = run_cleaner_application_with_plan(path)
+    return cleaning_report

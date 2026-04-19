@@ -11,7 +11,8 @@
       "WebFetch(domain:ai.pydantic.dev)",
       "WebFetch(domain:pydantic.dev)",
       "WebSearch",
-      "WebFetch(domain:raw.githubusercontent.com)"
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(pip install *)"
     ]
   }
 }

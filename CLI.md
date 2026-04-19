@@ -1,94 +1,140 @@
 # CLI Reference
 
-All commands run from the project root. Default dataset is `Data/spesa.csv`.
+All commands run from the project root.
 
----
+Use `python main.py ...`.
+Default dataset: `Data/spesa.csv`
+
+## Quick Model
+
+The CLI is organized around two main entrypoints:
+
+- `validate`: run the analysis pipeline and save validation artifacts
+- `clean`: run validation, remediation planning, cleaner generation, cleaner application, verification, and final reporting
+
+Everything else is a focused sub-step of one of those flows.
+
+Legacy aliases are still accepted:
+
+- `all` -> `validate`
+- `pipeline` -> `clean`
+
+## Common Commands
+
+Build the validation bundle:
+
+```bash
+python main.py Data/attivazioniCessazioni.csv
+python main.py Data/attivazioniCessazioni.csv --stage validate
+python main.py Data/attivazioniCessazioni.csv --stage validate --reuse-schema --reuse-completeness --reuse-consistency
+```
+
+Run the full cleaning flow:
+
+```bash
+python main.py Data/attivazioniCessazioni.csv --stage clean
+python main.py Data/attivazioniCessazioni.csv --stage clean --reuse-validation --reuse-remediation
+```
+
+Build the remediation plan only:
+
+```bash
+python main.py Data/attivazioniCessazioni.csv --stage remediate
+python main.py Data/attivazioniCessazioni.csv --stage remediate --reuse-validation
+```
+
+Run one focused step:
+
+```bash
+python main.py Data/attivazioniCessazioni.csv --stage dtype
+python main.py Data/attivazioniCessazioni.csv --stage schema
+python main.py Data/attivazioniCessazioni.csv --stage completeness
+python main.py Data/attivazioniCessazioni.csv --stage consistency
+python main.py Data/attivazioniCessazioni.csv --stage remediate
+python main.py Data/attivazioniCessazioni.csv --stage generate --column "aggregation-time"
+python main.py Data/attivazioniCessazioni.csv --stage apply
+python main.py Data/attivazioniCessazioni.csv --stage verify
+```
 
 ## Stages
 
-### Dtype Inference
-Infers pandas dtype, role, pattern, and rationale per column. Prints a formatted table.
-```bash
-python test.py Data/attivazioniCessazioni.csv --stage dtype
-```
+### `validate`
 
-### Schema Validation
-Naming convention checks, duplicate detection, dtype inference. Auto-saves to `.validation_cache/`.
-```bash
-python test.py Data/attivazioniCessazioni.csv --stage schema
-python test.py Data/spesa.csv --stage schema
-python test.py Data/attivazioniCessazioni.csv --stage schema --reuse-schema
-```
+Builds and saves:
 
-### Completeness Analysis
-Missing values, placeholder detection, sparse columns. Auto-saves to `.validation_cache/`.
-```bash
-python test.py Data/attivazioniCessazioni.csv --stage completeness
-python test.py Data/attivazioniCessazioni.csv --stage completeness --reuse-completeness
-```
+- schema handoff
+- completeness report
+- consistency report
+- anomaly report
+- cross-column report
+- duplicate report
+- validation bundle
 
-### Consistency Validation
-Format inconsistencies per column. Auto-saves to `.validation_cache/`.
-```bash
-python test.py Data/attivazioniCessazioni.csv --stage consistency
-python test.py Data/attivazioniCessazioni.csv --stage consistency --reuse-consistency
-python test.py Data/attivazioniCessazioni.csv --stage consistency --consistency-agent format
-python test.py Data/spesa.csv --stage consistency --consistency-agent format
-```
+### `remediate`
 
-> **Schema handoff integration (automatic):** when `--consistency-agent format` is used,
-> the format consistency stage automatically reads the cached schema handoff (if present) to skip
-> `name`/`free_text` columns and pass `detected_pattern` as the authoritative expected format.
-> Run `--stage schema` first to populate the cache, then run consistency — no extra flag needed:
-> ```bash
-> python test.py Data/attivazioniCessazioni.csv --stage schema
-> python test.py Data/attivazioniCessazioni.csv --stage consistency --consistency-agent format
-> ```
+Builds and saves:
 
-### Cleaning
-Generates and applies Python cleaning functions for format issues found in consistency validation.
-```bash
-python test.py Data/attivazioniCessazioni.csv --stage clean
-python test.py Data/attivazioniCessazioni.csv --stage clean --reuse-validation
-python test.py Data/attivazioniCessazioni.csv --stage generate --verbose
-python test.py Data/spesa.csv --stage generate --verbose --column "aggregation-time"
-```
+- remediation plan
 
-### Full Pipeline
-Runs schema → completeness → consistency → saves bundle. Any stage can be reused from cache.
-```bash
-python test.py Data/attivazioniCessazioni.csv
-python test.py Data/attivazioniCessazioni.csv --reuse-schema
-python test.py Data/attivazioniCessazioni.csv --reuse-schema --reuse-completeness
-python test.py Data/attivazioniCessazioni.csv --reuse-schema --reuse-completeness --reuse-consistency
-```
+The remediation plan is deterministic and separates:
 
----
+- safe auto-apply actions
+- proposed but not auto-applied actions
+- manual-review items
+- duplicate-row drop candidates that are reported but never auto-applied
+
+### `clean`
+
+Runs:
+
+1. validation bundle load/build
+2. remediation plan load/build
+3. cleaner generation
+4. cleaner application plus safe remediation actions
+5. post-clean verification
+6. final report write
+
+### Focused stages
+
+- `dtype`: print inferred dtype, role, pattern, and rationale per column
+- `schema`: run schema analysis only
+- `completeness`: run completeness analysis only
+- `consistency`: run format consistency validation only
+- `remediate`: build the remediation plan from the validation bundle
+- `generate`: generate cleaner modules from consistency findings
+- `apply`: apply generated cleaners and safe remediation/schema/completeness post-processing
+- `verify`: compare original vs cleaned consistency findings
 
 ## Flags
 
 | Flag | Applies to | Effect |
 |---|---|---|
-| `--stage` | all | Which stage to run: `dtype`, `schema`, `completeness`, `consistency`, `clean`, `all` |
-| `--reuse-schema` | `schema`, `all` | Load schema handoff from cache, skip LLM calls |
-| `--reuse-completeness` | `completeness`, `all` | Load completeness result from cache, skip LLM calls |
-| `--reuse-consistency` | `consistency`, `all` | Load consistency result from cache, skip LLM calls |
-| `--reuse-validation` | `clean` | Load full validation bundle from cache before cleaning |
-| `--consistency-agent` | `consistency` | Sub-agent to use: `all` (default) or `format` |
-| `--verbose` | all | Stream live agent text/thinking/tool events to stderr while the run is in progress |
-| `--column` | `generate` | Restrict cleaner generation to one exact column name, e.g. `--column "aggregation-time"` |
+| `--stage` | all | Selects the stage. Default: `validate` |
+| `--reuse-schema` | `schema`, `validate` | Reuse schema cache |
+| `--reuse-completeness` | `completeness`, `validate` | Reuse completeness cache |
+| `--reuse-consistency` | `consistency`, `validate`, `generate` | Reuse consistency cache |
+| `--reuse-validation` | `remediate`, `clean` | Reuse the saved validation bundle |
+| `--reuse-remediation` | `remediate`, `clean` | Reuse the saved remediation plan |
+| `--verbose` | all | Stream live agent/tool events to stderr |
+| `--column` | `generate` | Restrict generation to one exact column name |
+| `--cleaner-attempts` | `clean`, `generate` | Max generator/critic attempts per column |
 
----
+## Cache And Output Paths
 
-## Cache Files
+Validation caches are saved next to the dataset file:
 
-All saved under `.validation_cache/<dataset_stem>/`:
+- `Data/.validation_cache/<dataset>.schema_handoff.json`
+- `Data/.validation_cache/<dataset>.completeness.json`
+- `Data/.validation_cache/<dataset>.consistency.json`
+- `Data/.validation_cache/<dataset>.anomaly.json`
+- `Data/.validation_cache/<dataset>.cross_column.json`
+- `Data/.validation_cache/<dataset>.duplicates.json`
+- `Data/.validation_cache/<dataset>.remediation_plan.json`
+- `Data/.validation_cache/<dataset>.validation_bundle.json`
 
-| File | Written by |
-|---|---|
-| `<stem>.schema_handoff.json` | `--stage schema` |
-| `<stem>.completeness.json` | `--stage completeness` |
-| `<stem>.consistency.json` | `--stage consistency` |
-| `<stem>.validation_bundle.json` | `--stage all` |
+Cleaning outputs are also dataset-adjacent:
 
-Cleaned output is saved under `.cleaning_cache/<dataset_stem>/`.
+- `Data/.cleaning_cache/<dataset>/cleaner_manifest.json`
+- `Data/.cleaning_cache/<dataset>/generated_cleaners/*.py`
+- `Data/.cleaning_cache/<dataset>/<dataset>.cleaned.csv`
+- `Data/.cleaning_cache/<dataset>/<dataset>.final_report.json`

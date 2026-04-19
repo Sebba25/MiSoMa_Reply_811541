@@ -3,8 +3,5 @@ __pycache__/
 
 .env
 .logfire/
-.validation_cache/
-.cleaning_cache/
-
-Data/.validation_cache/
-Data/.cleaning_cache/
+**/.validation_cache/
+**/.cleaning_cache/

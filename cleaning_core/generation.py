@@ -100,6 +100,9 @@ def _build_cleaner_generation_prompt(
     if previous_program is not None and validation_issues:
         error_lines = "\n".join(f"- {_format_validation_issue(issue)}" for issue in validation_issues[:20])
         concrete_examples = _format_validation_examples(validation_issues, limit=8)
+        has_self_containment_failure = any(
+            issue.category == "non_self_contained_function" for issue in validation_issues
+        )
         prompt.extend(
             [
                 (
@@ -114,7 +117,13 @@ def _build_cleaner_generation_prompt(
                     "The host-side validator will decide whether to call the critic again."
                 ),
                 attach_text_document(
-                    "Host-side validation failures:\n"
+                    (
+                        "Priority note: the previous function was not self-contained. "
+                        "Fix undefined-name or outer-scope-reference bugs before changing cleaning logic.\n\n"
+                        if has_self_containment_failure
+                        else ""
+                    )
+                    + "Host-side validation failures:\n"
                     f"{error_lines}\n\n"
                     "Concrete failing examples to fix first:\n"
                     f"{concrete_examples}\n\n"
@@ -140,7 +149,7 @@ def _build_cleaner_generation_prompt(
 def run_column_cleaner_program(
     dataset_name: str,
     request: ColumnCleaningRequest,
-    max_attempts: int = 5,
+    max_attempts: int = 10,
 ) -> ColumnCleanerProgram:
     previous_program: ColumnCleanerProgram | None = None
     validation_issues: list[CleanerValidationIssue] = []
@@ -187,18 +196,23 @@ def run_column_cleaner_program(
         )
         repeated_failure = last_issue_fingerprint is not None and issue_fingerprint == last_issue_fingerprint
 
+        leading_issue = validation_issues[0]
+        failure_label = (
+            "construction-failure"
+            if leading_issue.category == "non_self_contained_function"
+            else "failed"
+        )
         print(
-            f"[orchestrator][validator] column='{request.column_name}' failed attempt {attempt}/{max_attempts}: "
-            f"{validation_issues[0].message}",
+            f"[orchestrator][validator] column='{request.column_name}' {failure_label} attempt {attempt}/{max_attempts}: "
+            f"{leading_issue.message}",
             file=sys.stderr,
         )
 
         if same_code_as_previous or repeated_failure:
-            failure_lines = "\n".join(f"- {_format_validation_issue(issue)}" for issue in validation_issues[:10])
-            reason = "the model repeated the same code" if same_code_as_previous else "the host-side failures repeated with no progress"
-            raise ValueError(
-                f"Cleaner generation stopped early for column '{request.column_name}' because {reason}:\n"
-                f"{failure_lines}"
+            reason = "repeated the same code" if same_code_as_previous else "repeated the same host-side failures"
+            print(
+                f"[orchestrator][validator] column='{request.column_name}' no-progress warning on attempt {attempt}/{max_attempts}: model {reason}; continuing until retry budget is exhausted unless the critic stops the run",
+                file=sys.stderr,
             )
 
         previous_program = program
@@ -240,7 +254,7 @@ def run_cleaner_generation(
     path,
     reuse_consistency: bool = False,
     column_name: str | None = None,
-    max_attempts: int = 5,
+    max_attempts: int = 10,
 ) -> list[GeneratedCleanerArtifact]:
     if max_attempts < 1:
         raise ValueError("max_attempts must be at least 1.")
