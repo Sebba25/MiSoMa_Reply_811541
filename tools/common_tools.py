@@ -14,6 +14,7 @@ pydantic-ai runtime types.
 from __future__ import annotations
 
 import base64
+import asyncio
 import gzip
 import json
 import os
@@ -443,7 +444,7 @@ def run_agent_with_backoff(
                     f"[{getattr(agent, 'name', None) or 'agent'}] retrying after HTTP 429 in {wait_seconds:.1f}s",
                     file=sys.stderr,
                     flush=True,
-                )
+            )
             time.sleep(wait_seconds)
         except ModelAPIError as error:
             message = str(error)
@@ -458,3 +459,53 @@ def run_agent_with_backoff(
                     flush=True,
                 )
             time.sleep(wait_seconds)
+
+
+async def run_agent_with_backoff_async(
+    agent: Agent,
+    prompt: str | list[object],
+    max_attempts: int = 6,
+    usage_limits: UsageLimits | None = None,
+    model_settings: dict | None = None,
+):
+    for attempt in range(max_attempts):
+        try:
+            event_stream_handler = None
+            if _verbose_agent_runs_enabled():
+                agent_name = getattr(agent, "name", None) or "agent"
+                print(f"[{agent_name}] starting run (attempt {attempt + 1}/{max_attempts})", file=sys.stderr, flush=True)
+                event_stream_handler = build_terminal_event_stream_handler(agent_name)
+            run_kwargs: dict = {
+                "event_stream_handler": event_stream_handler,
+                "usage_limits": usage_limits,
+            }
+            if model_settings is not None:
+                run_kwargs["model_settings"] = model_settings
+            return await agent.run(prompt, **run_kwargs)
+        except ModelHTTPError as error:
+            if error.status_code != 429 or attempt == max_attempts - 1:
+                raise
+            body_message = ""
+            if isinstance(error.body, dict):
+                body_message = str(error.body.get("message", ""))
+            wait_seconds = parse_retry_after_seconds(body_message, attempt + 1)
+            if _verbose_agent_runs_enabled():
+                print(
+                    f"[{getattr(agent, 'name', None) or 'agent'}] retrying after HTTP 429 in {wait_seconds:.1f}s",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            await asyncio.sleep(wait_seconds)
+        except ModelAPIError as error:
+            message = str(error)
+            is_connection_issue = "Connection error" in message or "connection" in message.lower()
+            if not is_connection_issue or attempt == max_attempts - 1:
+                raise
+            wait_seconds = min(2**attempt, 10)
+            if _verbose_agent_runs_enabled():
+                print(
+                    f"[{getattr(agent, 'name', None) or 'agent'}] connection issue, retrying in {wait_seconds:.1f}s",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            await asyncio.sleep(wait_seconds)

@@ -106,14 +106,32 @@ def matches_dominant_datetime_format(value: str, request: ColumnCleaningRequest)
 
 
 def _suggest_corrected_datetime(raw_input: str, canonical_example: str) -> str | None:
-    """Best-effort: parse raw_input with pandas (dayfirst) and reformat to match canonical_example's shape."""
+    """Best-effort: parse raw_input with pandas and render a neutral datetime in the canonical shape."""
     try:
         parsed = pd.to_datetime(raw_input, dayfirst=True, format="mixed")
     except Exception:
         return None
+
+    midnight_tail = _midnight_tail_like(canonical_example)
+    if midnight_tail is not None:
+        return parsed.strftime("%Y-%m-%d") + midnight_tail
+
     tail_match = re.match(r"^\d{4}-\d{2}-\d{2}(.*)", canonical_example)
     tail = tail_match.group(1) if tail_match else ""
     return parsed.strftime("%Y-%m-%d") + tail
+
+
+def _midnight_tail_like(canonical_example: str) -> str | None:
+    """Build a midnight time suffix with the same separator and fractional precision as a canonical timestamp."""
+    match = re.match(r"^\d{4}-\d{2}-\d{2}([T ])\d{2}:\d{2}:\d{2}(\.\d+)?$", canonical_example)
+    if not match:
+        return None
+    separator, fractional = match.groups()
+    if fractional:
+        fractional = "." + ("0" * (len(fractional) - 1))
+    else:
+        fractional = ""
+    return f"{separator}00:00:00{fractional}"
 
 
 def _diagnose_datetime_component_order(

@@ -127,9 +127,15 @@ def run_cleaning(
     reuse_saved_validation: bool = False,
     reuse_saved_remediation: bool = False,
     cleaner_attempts: int = 10,
+    cleaner_workers: int = 1,
+    verify_workers: int = 1,
 ) -> CleaningPipelineResult:
     if cleaner_attempts < 1:
         raise ValueError("cleaner_attempts must be at least 1.")
+    if cleaner_workers < 1:
+        raise ValueError("cleaner_workers must be at least 1.")
+    if verify_workers < 1:
+        raise ValueError("verify_workers must be at least 1.")
 
     validation_results = _resolve_validation_results(path, validation_results, reuse_saved_validation)
     remediation_plan = _resolve_remediation_plan(
@@ -144,9 +150,10 @@ def run_cleaning(
         path,
         reuse_consistency=True,
         max_attempts=cleaner_attempts,
+        max_workers=cleaner_workers,
     )
     cleaning_report, execution_reports, remediation_plan = run_cleaner_application_with_plan(path, remediation_plan)
-    verification_report = run_verify(path)
+    verification_report = run_verify(path, max_workers=verify_workers)
     final_report = build_final_report(
         validation_results, remediation_plan, cleaning_report, verification_report,
         dataset_path=path,

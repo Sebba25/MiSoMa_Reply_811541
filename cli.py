@@ -103,6 +103,20 @@ def build_parser() -> argparse.ArgumentParser:
         default=10,
         help="Maximum generator/critic attempts per column during cleaner generation. Defaults to 10.",
     )
+    parser.add_argument(
+        "--concurrent-agents",
+        action="store_true",
+        help=(
+            "Run independent per-column agent work concurrently where supported "
+            "(cleaner generation and verification consistency checks). Defaults to sequential."
+        ),
+    )
+    parser.add_argument(
+        "--agent-workers",
+        type=int,
+        default=3,
+        help="Maximum worker count when --concurrent-agents is enabled. Defaults to 3.",
+    )
     return parser
 
 
@@ -170,11 +184,17 @@ def run_stage(args: argparse.Namespace, dataset_path: Path):
         print_dtype_inference(dataset_path)
         raise SystemExit(0)
 
+    agent_workers = args.agent_workers if args.concurrent_agents else 1
+
     stage_handlers: dict[str, Callable[[argparse.Namespace, Path], Any]] = {
         "validate": run_validation_bundle,
         "schema": lambda parsed_args, path: run_schema_validation(path, reuse_cache=parsed_args.reuse_schema),
         "completeness": lambda parsed_args, path: run_completeness_analysis(path, reuse_cache=parsed_args.reuse_completeness),
-        "consistency": lambda parsed_args, path: run_format_consistency_validation(path, reuse_cache=parsed_args.reuse_consistency),
+        "consistency": lambda parsed_args, path: run_format_consistency_validation(
+            path,
+            reuse_cache=parsed_args.reuse_consistency,
+            max_workers=agent_workers,
+        ),
         "remediate": lambda parsed_args, path: run_remediation_planning(
             path,
             reuse_saved_validation=parsed_args.reuse_validation,
@@ -185,15 +205,18 @@ def run_stage(args: argparse.Namespace, dataset_path: Path):
             reuse_saved_validation=parsed_args.reuse_validation,
             reuse_saved_remediation=parsed_args.reuse_remediation,
             cleaner_attempts=parsed_args.cleaner_attempts,
+            cleaner_workers=agent_workers,
+            verify_workers=agent_workers,
         ),
         "generate": lambda parsed_args, path: run_cleaner_generation(
             path,
             reuse_consistency=parsed_args.reuse_consistency,
             column_name=parsed_args.column,
             max_attempts=parsed_args.cleaner_attempts,
+            max_workers=agent_workers,
         ),
         "apply": lambda parsed_args, path: run_cleaner_application(path),
-        "verify": lambda parsed_args, path: run_verify(path),
+        "verify": lambda parsed_args, path: run_verify(path, max_workers=agent_workers),
         "report": run_narrative_report,
     }
     return stage_handlers[args.stage](args, dataset_path)
@@ -231,6 +254,9 @@ def main() -> None:
 
     if args.verbose:
         os.environ["AGENT_VERBOSE"] = "1"
+
+    if args.agent_workers < 1:
+        raise SystemExit("--agent-workers must be at least 1.")
 
     setup_logfire()
 

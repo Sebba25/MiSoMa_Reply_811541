@@ -87,7 +87,10 @@ def _diff_summary(diffs: list[FindingDiff]) -> str:
     return "; ".join(summary_parts) if summary_parts else "No changes detected."
 
 
-def run_verify(path: Path, on_event=None) -> ConsistencyVerificationReport:
+def run_verify(path: Path, on_event=None, max_workers: int = 1) -> ConsistencyVerificationReport:
+    if max_workers < 1:
+        raise ValueError("max_workers must be at least 1.")
+
     def _emit(message: str) -> None:
         if on_event is None:
             return
@@ -113,7 +116,12 @@ def run_verify(path: Path, on_event=None) -> ConsistencyVerificationReport:
 
     print(f"\n[verify] running consistency on cleaned dataset: {cleaned_path}", file=sys.stderr)
     _emit(f"re-running consistency on {len(original_map)} original finding columns")
-    after = run_format_consistency_validation(cleaned_path, reuse_cache=False, read_as_str=True)
+    after = run_format_consistency_validation(
+        cleaned_path,
+        reuse_cache=False,
+        read_as_str=True,
+        max_workers=max_workers,
+    )
     after_map = {
         reverse_rename.get(finding.column_name, finding.column_name): finding
         for finding in after.format_consistency_findings

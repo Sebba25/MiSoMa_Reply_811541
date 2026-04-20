@@ -1247,6 +1247,14 @@ def _list_available_datasets() -> list[Path]:
     return sorted(p for p in data_dir.glob("*.csv") if p.is_file())
 
 
+def _max_parallel_agent_workers(path: Path) -> int:
+    try:
+        columns = pd.read_csv(path, nrows=0).columns
+        return max(1, len(columns))
+    except Exception:
+        return 1
+
+
 # ---------------------------------------------------------------------------
 # Pipeline runner — executes stages sequentially with live status
 # ---------------------------------------------------------------------------
@@ -1275,6 +1283,7 @@ def run_full_pipeline(dataset_path: Path, strip_ph, prog_ph, log_container) -> N
     st.session_state.completed_stages = set()
     st.session_state.current_stage = None
     st.session_state.narrative_error = None
+    agent_workers = _max_parallel_agent_workers(dataset_path)
     _render_progress(0, None, strip_ph, prog_ph)
     stage_entries: list[dict[str, object]] = []
     log_ph = log_container.empty()
@@ -1346,7 +1355,8 @@ def run_full_pipeline(dataset_path: Path, strip_ph, prog_ph, log_container) -> N
     # Stage 4: consistency
     _mark_stage("Consistency", strip_ph, prog_ph)
     with stage_banner("Consistency", "per-column format validation") as s:
-        consistency = run_format_consistency_validation(dataset_path)
+        s.write(f"Parallel agent workers: {agent_workers}.")
+        consistency = run_format_consistency_validation(dataset_path, max_workers=agent_workers)
         n_findings = len(consistency.format_consistency_findings)
         s.write(f"{n_findings} format inconsistenc{'ies' if n_findings != 1 else 'y'} detected.")
     _complete_stage("Consistency", strip_ph, prog_ph)
@@ -1406,6 +1416,7 @@ def run_full_pipeline(dataset_path: Path, strip_ph, prog_ph, log_container) -> N
             dataset_path,
             reuse_consistency=True,
             max_attempts=10,
+            max_workers=agent_workers,
             on_event=s.write,
         )
         s.write(f"{len(artifacts)} cleaner function{'s' if len(artifacts) != 1 else ''} generated.")
@@ -1424,7 +1435,7 @@ def run_full_pipeline(dataset_path: Path, strip_ph, prog_ph, log_container) -> N
     # Stage 11: verification
     _mark_stage("Verify", strip_ph, prog_ph)
     with stage_banner("Verify", "re-checking consistency after cleaning") as s:
-        verification_report = run_verify(dataset_path, on_event=s.write)
+        verification_report = run_verify(dataset_path, on_event=s.write, max_workers=agent_workers)
         s.write(verification_report.summary if verification_report else "Verification complete.")
     _complete_stage("Verify", strip_ph, prog_ph)
 
@@ -1555,7 +1566,7 @@ def _dataset_preview_panel(path: Path) -> None:
     ])
 
     st.markdown('<div class="panel-label">Preview (first 200 rows)</div>', unsafe_allow_html=True)
-    st.dataframe(df, use_container_width=True, height=340)
+    st.dataframe(df, width="stretch", height=340)
 
 
 def view_pipeline() -> None:
@@ -1591,9 +1602,9 @@ def view_pipeline() -> None:
             run_label = "Select a dataset first"
         else:
             run_label = "Run pipeline"
-        run_clicked = st.button(run_label, disabled=disabled, use_container_width=True, type="primary")
+        run_clicked = st.button(run_label, disabled=disabled, width="stretch", type="primary")
     with col_reset:
-        if st.button("Reset", use_container_width=True, disabled=st.session_state.pipeline_running):
+        if st.button("Reset", width="stretch", disabled=st.session_state.pipeline_running):
             st.session_state.pipeline_done = False
             st.session_state.completed_stages = set()
             st.session_state.final_report = None
@@ -1725,7 +1736,7 @@ def _render_narrative(narrative) -> None:
             data=report_text,
             file_name=f"{st.session_state.dataset_name}_quality_report.md",
             mime="text/markdown",
-            use_container_width=True,
+            width="stretch",
         )
     with col_b:
         import json as _json
@@ -1734,7 +1745,7 @@ def _render_narrative(narrative) -> None:
             data=_json.dumps(st.session_state.final_report.model_dump(), indent=2, ensure_ascii=False),
             file_name=f"{st.session_state.dataset_name}_final_report.json",
             mime="application/json",
-            use_container_width=True,
+            width="stretch",
         )
 
 
@@ -1777,7 +1788,7 @@ def _render_structured_report_fallback(final_report: FinalPipelineReport, narrat
                     "Reason": action.reason[:140] + "..." if len(action.reason) > 140 else action.reason,
                 }
             )
-        st.dataframe(pd.DataFrame(preview_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(preview_rows), width="stretch", hide_index=True)
 
     if final_report.unresolved_risks:
         st.markdown("### Residual Risks")
@@ -1812,7 +1823,7 @@ def _render_action_ledger(final_report: FinalPipelineReport) -> None:
                 "Target": target_str,
                 "Reason": a.reason[:120] + "..." if len(a.reason) > 120 else a.reason,
             })
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
     st.markdown(
         '<div class="kicker" style="color:var(--ink-muted);">Manual Review Queue</div>',
@@ -1846,7 +1857,7 @@ def _render_cleaned_dataset(dataset_path: Path | None) -> None:
         _metric("Preview", "500", "rows"),
     ])
 
-    st.dataframe(df_clean, use_container_width=True, height=420)
+    st.dataframe(df_clean, width="stretch", height=420)
 
     with open(cleaned_path, "rb") as fh:
         st.download_button(

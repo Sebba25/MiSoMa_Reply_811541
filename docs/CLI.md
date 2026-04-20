@@ -118,6 +118,8 @@ Runs:
 | `--verbose` | all | Stream live agent/tool events to stderr |
 | `--column` | `generate` | Restrict generation to one exact column name |
 | `--cleaner-attempts` | `clean`, `generate` | Max generator/critic attempts per column |
+| `--concurrent-agents` | `consistency`, `generate`, `verify`, `clean` | Run independent per-column agent work concurrently where supported |
+| `--agent-workers` | `consistency`, `generate`, `verify`, `clean` | Worker limit used with `--concurrent-agents`; defaults to 3 |
 
 ## Cache And Output Paths
 

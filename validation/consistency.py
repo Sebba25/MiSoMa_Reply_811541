@@ -12,6 +12,7 @@ generator handles each group explicitly.
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -35,6 +36,7 @@ from tools import (
     matches_numeric_schema_pattern,
     numeric_pattern_allows_variable_width,
     run_agent_with_backoff,
+    run_agent_with_backoff_async,
     value_shape,
 )
 
@@ -266,11 +268,162 @@ def run_column_format_check(
     return output
 
 
+async def run_column_format_check_async(
+    df: pd.DataFrame,
+    column_name: str,
+    dataset_name: str,
+    context_label: str,
+    schema_entry: SchemaColumnEntry | None = None,
+) -> ColumnConsistencyReport:
+    # Skip columns that are never machine-format candidates by role
+    if schema_entry is not None and schema_entry.string_role in ("name", "free_text"):
+        return ColumnConsistencyReport(
+            finding=None,
+            summary=(
+                f"Column '{column_name}' skipped: string_role='{schema_entry.string_role}' "
+                f"is not a machine-format candidate."
+            ),
+        )
+
+    format_facts = build_column_format_facts(df, column_name)
+    if not format_facts.machine_format_candidate or format_facts.inconsistent_rows <= 0:
+        return ColumnConsistencyReport(
+            finding=None,
+            summary=(
+                f"No actionable machine-format inconsistency detected for column '{column_name}' "
+                f"in {context_label}."
+            ),
+        )
+
+    # Fast path: schema already identified the dominant pattern - no LLM needed.
+    if schema_entry is not None and schema_entry.detected_pattern:
+        inconsistent_rows = format_facts.inconsistent_rows
+        inconsistent_example_profiles = format_facts.inconsistent_examples
+        used_schema_override = False
+
+        guided_profile = _profile_schema_guided_inconsistencies(df, column_name, schema_entry)
+        if guided_profile is not None:
+            inconsistent_rows, inconsistent_example_profiles = guided_profile
+            used_schema_override = True
+
+        if inconsistent_rows <= 0:
+            return ColumnConsistencyReport(
+                finding=None,
+                summary=(
+                    f"No actionable machine-format inconsistency detected for column '{column_name}' "
+                    f"against schema pattern '{schema_entry.detected_pattern}' in {context_label}."
+                ),
+            )
+
+        inconsistent_examples = [ex.value for ex in inconsistent_example_profiles]
+        evidence = (
+            f"Schema handoff identified dominant pattern '{schema_entry.detected_pattern}'. "
+            f"Profiler found {inconsistent_rows} rows deviating from the "
+            f"dominant shape '{format_facts.dominant_shape}' "
+            f"({format_facts.dominant_shape_pct:.1f}% of non-null rows match the dominant shape)."
+        )
+        if used_schema_override:
+            evidence = (
+                f"Schema handoff identified target dtype '{schema_entry.pandas_dtype}' and pattern "
+                f"'{schema_entry.detected_pattern}'. Schema-guided validation found "
+                f"{inconsistent_rows} rows that do not match the target numeric representation."
+            )
+
+        return ColumnConsistencyReport(
+            finding=FormatConsistencyFinding(
+                column_name=column_name,
+                expected_pattern=schema_entry.detected_pattern,
+                inconsistent_rows=inconsistent_rows,
+                example_inconsistent_values=inconsistent_examples,
+                evidence=evidence,
+                suggested_strategy=_build_suggested_strategy(
+                    schema_entry.detected_pattern,
+                    format_facts.dominant_shape,
+                    inconsistent_example_profiles,
+                    format_facts.dominant_example_values,
+                    allow_variable_numeric_width=numeric_pattern_allows_variable_width(
+                        pandas_dtype=schema_entry.pandas_dtype,
+                        numeric_role=schema_entry.numeric_role,
+                        detected_pattern=schema_entry.detected_pattern,
+                    ),
+                ),
+            ),
+            summary=(
+                f"Column '{column_name}': {inconsistent_rows} inconsistent rows detected "
+                f"against schema pattern '{schema_entry.detected_pattern}' (no LLM call)."
+            ),
+        )
+
+    schema_context = ""
+    if schema_entry is not None:
+        schema_context = (
+            f" Target dtype: {schema_entry.pandas_dtype}."
+            f" Semantic role: {schema_entry.numeric_role or schema_entry.string_role or 'unknown'}."
+        )
+    prompt = [
+        (
+            f"Analyze the attached ColumnFormatFacts for dataset '{dataset_name}', column '{column_name}'."
+            f"{schema_context}"
+            f" Total rows: {len(df)}."
+            f" Dominant shape: '{format_facts.dominant_shape}' ({format_facts.dominant_shape_pct:.1f}% of non-null rows)."
+            f" Inconsistent rows: {format_facts.inconsistent_rows}."
+            " Determine whether a format inconsistency exists that a cleaning function could fix."
+            " If yes, write a precise suggested_strategy listing every outlier shape with concrete transformation steps."
+            " Return finding=null if the column is consistent or format consistency is not applicable."
+        ),
+        attach_profile_text(format_facts),
+    ]
+    print(
+        f"[orchestrator][consistency][format-agent] dataset='{dataset_name}' column='{column_name}'",
+        file=sys.stderr,
+        flush=True,
+    )
+    result = await run_agent_with_backoff_async(format_consistency_agent, prompt)
+    output = result.output
+    if output.finding is not None and output.finding.inconsistent_rows <= 0:
+        return ColumnConsistencyReport(
+            finding=None,
+            summary=output.summary,
+        )
+    return output
+
+
+async def _run_column_format_checks_async(
+    df: pd.DataFrame,
+    column_names: list[str],
+    dataset_name: str,
+    schema_map: dict[str, SchemaColumnEntry],
+    max_workers: int,
+) -> list[ColumnConsistencyReport]:
+    semaphore = asyncio.Semaphore(max_workers)
+
+    async def _run_one(index: int, column_name: str) -> tuple[int, ColumnConsistencyReport]:
+        async with semaphore:
+            report = await run_column_format_check_async(
+                df,
+                column_name,
+                dataset_name,
+                "original validation",
+                schema_entry=schema_map.get(column_name),
+            )
+            return index, report
+
+    tasks = [asyncio.create_task(_run_one(index, column_name)) for index, column_name in enumerate(column_names)]
+    reports_by_index: dict[int, ColumnConsistencyReport] = {}
+    for task in asyncio.as_completed(tasks):
+        index, report = await task
+        reports_by_index[index] = report
+    return [reports_by_index[index] for index in range(len(column_names))]
+
+
 def run_format_consistency_validation(
     path: Path,
     reuse_cache: bool = False,
     read_as_str: bool = False,
+    max_workers: int = 1,
 ) -> ConsistencyValidationReport:
+    if max_workers < 1:
+        raise ValueError("max_workers must be at least 1.")
     if reuse_cache:
         return load_consistency(path)
     df = load_dataset_frame(path, dtype=str if read_as_str else None)
@@ -283,9 +436,26 @@ def run_format_consistency_validation(
     except Exception:
         pass
 
-    for column_name in df.columns:
-        schema_entry = schema_map.get(column_name)
-        result = run_column_format_check(df, column_name, path.stem, "original validation", schema_entry=schema_entry)
+    column_names = list(df.columns)
+    if max_workers == 1 or len(column_names) <= 1:
+        reports = []
+        for column_name in column_names:
+            schema_entry = schema_map.get(column_name)
+            reports.append(
+                run_column_format_check(df, column_name, path.stem, "original validation", schema_entry=schema_entry)
+            )
+    else:
+        worker_count = min(max_workers, len(column_names))
+        print(
+            f"[orchestrator][consistency] running {len(column_names)} column checks with {worker_count} async workers",
+            file=sys.stderr,
+            flush=True,
+        )
+        reports = asyncio.run(
+            _run_column_format_checks_async(df, column_names, path.stem, schema_map, worker_count)
+        )
+
+    for result in reports:
         if result.finding is not None:
             format_findings.append(result.finding)
 

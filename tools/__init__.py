@@ -16,6 +16,7 @@ from tools.common_tools import (
     matches_numeric_schema_pattern,
     numeric_pattern_allows_variable_width,
     run_agent_with_backoff,
+    run_agent_with_backoff_async,
     value_shape,
 )
 from tools.completeness_tools import build_completeness_profile
@@ -73,6 +74,7 @@ __all__ = [
     "normalized_schema_name",
     "numeric_pattern_allows_variable_width",
     "run_agent_with_backoff",
+    "run_agent_with_backoff_async",
     "suggest_schema_name",
     "value_shape",
 ]
