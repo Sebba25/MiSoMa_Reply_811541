@@ -17,7 +17,10 @@ Public entry points: ``run_cleaner_generation`` (driver) and
 
 from __future__ import annotations
 
+import os
 import sys
+from contextlib import contextmanager
+from typing import Callable
 
 from agents import cleaner_repair_critic_agent, column_cleaner_generator_agent
 from cache import load_schema_handoff
@@ -31,8 +34,8 @@ from models import (
 )
 from pydantic_ai.usage import UsageLimits
 from pydantic_ai.exceptions import UsageLimitExceeded
-from pipeline import run_format_consistency_validation
-from tools.tools import (
+from validation import run_format_consistency_validation
+from tools import (
     attach_profile_text,
     attach_text_document,
     build_column_format_facts,
@@ -40,7 +43,7 @@ from tools.tools import (
     run_agent_with_backoff,
 )
 
-from .paths import cleaner_manifest_path, save_cleaner_manifest, save_generated_cleaner
+from .paths import cleaner_manifest_path, cleaning_cache_dir, save_cleaner_manifest, save_generated_cleaner
 from .request import build_column_cleaning_request
 from .validation import (
     format_validation_examples,
@@ -52,6 +55,46 @@ from .validation import (
 
 
 GENERATOR_USAGE_LIMITS = UsageLimits(tool_calls_limit=1)
+
+ProgressCallback = Callable[[str], None]
+
+
+def _emit(on_event: ProgressCallback | None, message: str) -> None:
+    if on_event is None:
+        return
+    try:
+        on_event(message)
+    except Exception:
+        pass
+
+
+@contextmanager
+def _generation_lock(path):
+    """Filesystem lock so two concurrent generators on the same dataset can't interleave.
+
+    Uses O_CREAT | O_EXCL — if the lock file already exists (another process or
+    another Streamlit script-run is inside the loop), raise immediately rather
+    than silently racing.
+    """
+    cache_dir = cleaning_cache_dir(path)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = cache_dir / ".generate.lock"
+    try:
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError as error:
+        raise RuntimeError(
+            f"Another cleaner generation is already running for {path.stem!r} "
+            f"(lock file: {lock_path}). If no other process is running, delete the lock file and retry."
+        ) from error
+    try:
+        os.write(fd, str(os.getpid()).encode("utf-8"))
+        os.close(fd)
+        yield
+    finally:
+        try:
+            lock_path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _print_example_transformations(program: ColumnCleanerProgram) -> None:
@@ -230,6 +273,7 @@ def run_column_cleaner_program(
     dataset_name: str,
     request: ColumnCleaningRequest,
     max_attempts: int = 10,
+    on_event: ProgressCallback | None = None,
 ) -> ColumnCleanerProgram:
     previous_program: ColumnCleanerProgram | None = None
     validation_issues: list[CleanerValidationIssue] = []
@@ -243,6 +287,11 @@ def run_column_cleaner_program(
             f"[orchestrator][generator] column='{request.column_name}' attempt={attempt}/{max_attempts}"
             + (f" [STAGNATION OVERRIDE active, temp bumped]" if stagnation_detected else ""),
             file=sys.stderr,
+        )
+        _emit(
+            on_event,
+            f"  · attempt {attempt}/{max_attempts}"
+            + (" (stagnation override)" if stagnation_detected else ""),
         )
         prompt = _build_cleaner_generation_prompt(
             dataset_name,
@@ -278,6 +327,7 @@ def run_column_cleaner_program(
                 f"[orchestrator][generator] column='{request.column_name}' accepted on attempt {attempt}",
                 file=sys.stderr,
             )
+            _emit(on_event, f"  ✓ accepted on attempt {attempt}")
             return program
 
         issue_fingerprint = validation_issue_fingerprint(validation_issues)
@@ -298,6 +348,8 @@ def run_column_cleaner_program(
             f"{leading_issue.message}",
             file=sys.stderr,
         )
+        short_reason = leading_issue.message.split(".")[0][:120]
+        _emit(on_event, f"  ✗ attempt {attempt} {failure_label}: {short_reason}")
 
         if same_code_as_previous or repeated_failure:
             reason = "repeated the same code" if same_code_as_previous else "repeated the same host-side failures"
@@ -317,6 +369,7 @@ def run_column_cleaner_program(
                 f"[orchestrator][critic] column='{request.column_name}' reviewing {len(validation_issues)} validation issues",
                 file=sys.stderr,
             )
+            _emit(on_event, f"  → critic reviewing {len(validation_issues)} issues")
             repair_diagnosis = run_cleaner_repair_critic(dataset_name, request, program, validation_issues)
             print(
                 f"[orchestrator][critic] column='{request.column_name}' diagnosis: {repair_diagnosis.root_cause}",
@@ -349,10 +402,22 @@ def run_cleaner_generation(
     reuse_consistency: bool = False,
     column_name: str | None = None,
     max_attempts: int = 10,
+    on_event: ProgressCallback | None = None,
 ) -> list[GeneratedCleanerArtifact]:
     if max_attempts < 1:
         raise ValueError("max_attempts must be at least 1.")
 
+    with _generation_lock(path):
+        return _run_cleaner_generation_locked(path, reuse_consistency, column_name, max_attempts, on_event)
+
+
+def _run_cleaner_generation_locked(
+    path,
+    reuse_consistency: bool,
+    column_name: str | None,
+    max_attempts: int,
+    on_event: ProgressCallback | None = None,
+) -> list[GeneratedCleanerArtifact]:
     consistency = run_format_consistency_validation(path, reuse_cache=reuse_consistency)
     df = load_dataset_frame(path)
     artifacts: list[GeneratedCleanerArtifact] = []
@@ -376,7 +441,9 @@ def run_cleaner_generation(
             )
 
     failed_columns: list[str] = []
-    for finding in findings:
+    total_columns = len(findings)
+    _emit(on_event, f"{total_columns} column{'s' if total_columns != 1 else ''} to synthesize")
+    for idx, finding in enumerate(findings, start=1):
         column_name = finding.column_name
         format_facts = build_column_format_facts(df, column_name)
         schema_entry = schema_map.get(column_name)
@@ -386,17 +453,28 @@ def run_cleaner_generation(
             f"\n[generate] '{column_name}' - {len(request.example_inconsistent_values)} outlier examples -> sandbox...",
             file=sys.stderr,
         )
+        _emit(
+            on_event,
+            f"[{idx}/{total_columns}] '{column_name}' — {len(request.example_inconsistent_values)} outlier examples",
+        )
         try:
-            program = run_column_cleaner_program(path.stem, request, max_attempts=max_attempts)
+            program = run_column_cleaner_program(
+                path.stem, request, max_attempts=max_attempts, on_event=on_event
+            )
         except ValueError as error:
             failed_columns.append(f"{column_name}: {error}")
             print(f"  FAILED - {error}", file=sys.stderr)
+            _emit(on_event, f"  ✗ '{column_name}' failed: {str(error)[:120]}")
             continue
         code_path = save_generated_cleaner(path, program)
 
         print(f"  saved: {code_path}", file=sys.stderr)
         print(f"  sandbox validation ({len(program.example_transformations)} transformations):", file=sys.stderr)
         _print_example_transformations(program)
+        _emit(
+            on_event,
+            f"  saved cleaner ({len(program.example_transformations)} sandbox transformations verified)",
+        )
 
         artifacts.append(
             GeneratedCleanerArtifact(
@@ -405,6 +483,7 @@ def run_cleaner_generation(
                 code_path=str(code_path),
                 changed_rows=0,
                 summary=program.verification_summary,
+                example_transformations=list(program.example_transformations),
             )
         )
 

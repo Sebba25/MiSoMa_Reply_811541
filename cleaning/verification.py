@@ -15,8 +15,8 @@ import pandas as pd
 
 from cache import load_consistency, load_schema_handoff
 from models import ConsistencyVerificationReport, FindingDiff
-from pipeline import run_format_consistency_validation
-from tools.tools import load_dataset_frame
+from validation import run_format_consistency_validation
+from tools import load_dataset_frame
 
 from .paths import cleaned_dataset_path
 
@@ -70,7 +70,11 @@ def _diff_summary(diffs: list[FindingDiff]) -> str:
     new = [diff for diff in diffs if diff.status == "new"]
 
     if resolved:
-        summary_parts.append(f"{len(resolved)} resolved ({', '.join(diff.column_name for diff in resolved)})")
+        resolved_names = [
+            f"{diff.column_name}→{diff.renamed_to}" if diff.renamed_to else diff.column_name
+            for diff in resolved
+        ]
+        summary_parts.append(f"{len(resolved)} resolved ({', '.join(resolved_names)})")
     if improved:
         summary_parts.append(f"{len(improved)} improved")
     if unchanged:
@@ -83,7 +87,15 @@ def _diff_summary(diffs: list[FindingDiff]) -> str:
     return "; ".join(summary_parts) if summary_parts else "No changes detected."
 
 
-def run_verify(path: Path) -> ConsistencyVerificationReport:
+def run_verify(path: Path, on_event=None) -> ConsistencyVerificationReport:
+    def _emit(message: str) -> None:
+        if on_event is None:
+            return
+        try:
+            on_event(message)
+        except Exception:
+            pass
+
     cleaned_path = cleaned_dataset_path(path)
     if not cleaned_path.exists():
         raise FileNotFoundError(
@@ -100,6 +112,7 @@ def run_verify(path: Path) -> ConsistencyVerificationReport:
     numeric_original_names = _numeric_original_names(cleaned_df, reverse_rename)
 
     print(f"\n[verify] running consistency on cleaned dataset: {cleaned_path}", file=sys.stderr)
+    _emit(f"re-running consistency on {len(original_map)} original finding columns")
     after = run_format_consistency_validation(cleaned_path, reuse_cache=False, read_as_str=True)
     after_map = {
         reverse_rename.get(finding.column_name, finding.column_name): finding
@@ -131,8 +144,11 @@ def run_verify(path: Path) -> ConsistencyVerificationReport:
                 after_inconsistent_rows=after_rows,
                 reduction_pct=reduction_pct,
                 remaining_examples=after_finding.example_inconsistent_values if after_finding else [],
+                renamed_to=rename_map.get(column_name),
             )
         )
+        display_name = rename_map.get(column_name, column_name)
+        _emit(f"  {status}: '{display_name}' ({before_rows}→{after_rows} rows)")
 
     for column_name, after_finding in after_map.items():
         if column_name in original_map:

@@ -56,21 +56,32 @@ Two main entrypoints via `--stage`:
 
 - **`agents.py`** — All Pydantic AI `Agent` definitions with detailed `instructions` prompts. Model is set via the `MODEL` constant at module top. Logfire instrumentation configured here.
 - **`models.py`** — All Pydantic models for structured agent output (schema, completeness, consistency, cleaning request/program/validation/repair).
-- **`pipeline.py`** — Orchestrates the validation stage: runs dtype inference, schema, completeness, and per-column consistency agents. Contains `build_validation_results()` as the main validation entrypoint.
-- **`cleaning.py`** — Re-exports from `cleaning_core/` subpackage. Import cleaning functions from here.
-- **`cleaning_core/`** — Subpackage split by concern:
+- **`validation/`** — Validation-stage orchestration, split by stage. Public entry point `build_validation_results()` lives in `validation/bundle.py`; every `run_<stage>` helper is also importable directly from the package root:
+  - `schema.py` — dtype inference + schema validation (`SchemaHandoff`)
+  - `completeness.py` — completeness analysis (`CompletenessAnalysisReport`)
+  - `consistency.py` — per-column format consistency (fast path + format agent)
+  - `anomaly.py` — numeric outlier + rare-category detection
+  - `cross_column.py` — duplicate-like columns, year/month/date-order checks
+  - `duplicates.py` — exact + near duplicate record groups
+  - `bundle.py` — `build_validation_results()` orchestrator
+  - `_summary.py` — shared helper for the summary-agent-with-fallback pattern
+- **`cleaning/`** — Cleaning pipeline subpackage. Public facade exposes `run_cleaning`, `run_cleaner_generation`, `run_cleaner_application`, `run_verify`, `run_remediation_planning` from `cleaning/__init__.py`:
+  - `orchestrator.py` — end-to-end `run_cleaning()` driver
   - `generation.py` — generator/critic repair loop
   - `validation.py` — host-side cleaner program validation (no LLM)
   - `application.py` — applies cleaners, renames, dtype casts, placeholder nulling to produce cleaned CSV
+  - `remediation.py` — builds the remediation plan from validation artifacts
+  - `reporting.py` — final JSON report + narrative generator
+  - `verification.py` — before/after consistency diff
   - `request.py` — builds `ColumnCleaningRequest` from schema + consistency findings
   - `runtime.py` — loads and executes generated cleaner `.py` files
   - `paths.py` — all cache/output path conventions
-  - `legacy.py` — `run_cleaning()` end-to-end orchestrator
-- **`tools/`** — Profiling and utility functions consumed by agents and pipeline:
+- **`tools/`** — Profiling and utility functions consumed by agents and both pipelines. `tools/__init__.py` is the public facade; import via `from tools import X`:
   - `common_tools.py` — shared helpers: dataset loading, value shape analysis, placeholder detection, agent retry with exponential backoff, attachment helpers
   - `schema_tools.py` — column profiling, dtype inference text builder, naming validation
   - `format_tools.py` — per-column format fact extraction (dominant shape, outlier examples)
   - `completeness_tools.py` — missing/placeholder detection and completeness profiling
+  - `quality_tools.py` — anomaly, cross-column, and duplicate-record heuristics
 - **`cli.py`** — argparse CLI, stage routing, result printing
 - **`cache.py`** — load/save functions for validation cache JSON files
 

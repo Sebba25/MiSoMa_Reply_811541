@@ -15,23 +15,23 @@ load_dotenv()
 
 from agents import setup_logfire
 from cache import load_validation_results
-from cleaning_core.orchestrator import (
+from cleaning.orchestrator import (
     _build_cleaning_requests,
     _resolve_remediation_plan,
 )
-from cleaning_core.paths import cleaned_dataset_path, final_report_path
-from cleaning_core.reporting import (
+from cleaning.paths import cleaned_dataset_path, final_report_path
+from cleaning.reporting import (
     build_final_report,
     generate_narrative_report,
     narrative_report_path,
     save_final_report,
     save_narrative_report,
 )
-from cleaning_core.verification import run_verify
-from cleaning_core.application import run_cleaner_application_with_plan
-from cleaning_core.generation import run_cleaner_generation
+from cleaning.verification import run_verify
+from cleaning.application import run_cleaner_application_with_plan
+from cleaning.generation import run_cleaner_generation
 from models import FinalPipelineReport
-from pipeline import (
+from validation import (
     build_validation_results,
     run_anomaly_detection,
     run_completeness_analysis,
@@ -1070,6 +1070,7 @@ def _init_state() -> None:
         "dataset_path": None,
         "dataset_name": None,
         "pipeline_done": False,
+        "pipeline_running": False,
         "current_stage": None,
         "completed_stages": set(),
         "final_report": None,
@@ -1401,7 +1402,12 @@ def run_full_pipeline(dataset_path: Path, strip_ph, prog_ph, log_container) -> N
     _mark_stage("Generate", strip_ph, prog_ph)
     with stage_banner("Generate", "synthesizing per-column cleaning functions") as s:
         _build_cleaning_requests(dataset_path, validation_results)
-        artifacts = run_cleaner_generation(dataset_path, reuse_consistency=True, max_attempts=10)
+        artifacts = run_cleaner_generation(
+            dataset_path,
+            reuse_consistency=True,
+            max_attempts=10,
+            on_event=s.write,
+        )
         s.write(f"{len(artifacts)} cleaner function{'s' if len(artifacts) != 1 else ''} generated.")
     _complete_stage("Generate", strip_ph, prog_ph)
 
@@ -1409,7 +1415,7 @@ def run_full_pipeline(dataset_path: Path, strip_ph, prog_ph, log_container) -> N
     _mark_stage("Apply", strip_ph, prog_ph)
     with stage_banner("Apply", "executing cleaners, renames, casts") as s:
         cleaning_report, _exec_reports, remediation_plan = run_cleaner_application_with_plan(
-            dataset_path, remediation_plan
+            dataset_path, remediation_plan, on_event=s.write
         )
         n_applied = len([a for a in remediation_plan.actions if a.status == "applied"]) if remediation_plan else 0
         s.write(f"{n_applied} action{'s' if n_applied != 1 else ''} applied to dataset.")
@@ -1418,13 +1424,14 @@ def run_full_pipeline(dataset_path: Path, strip_ph, prog_ph, log_container) -> N
     # Stage 11: verification
     _mark_stage("Verify", strip_ph, prog_ph)
     with stage_banner("Verify", "re-checking consistency after cleaning") as s:
-        verification_report = run_verify(dataset_path)
+        verification_report = run_verify(dataset_path, on_event=s.write)
         s.write(verification_report.summary if verification_report else "Verification complete.")
     _complete_stage("Verify", strip_ph, prog_ph)
 
     # Final report
     final_report = build_final_report(
-        validation_results, remediation_plan, cleaning_report, verification_report
+        validation_results, remediation_plan, cleaning_report, verification_report,
+        dataset_path=dataset_path,
     )
     save_final_report(dataset_path, final_report)
     st.session_state.final_report = final_report
@@ -1571,8 +1578,14 @@ def view_pipeline() -> None:
 
     col_run, col_reset = st.columns([3, 1])
     with col_run:
-        disabled = st.session_state.dataset_path is None or st.session_state.pipeline_done
-        if st.session_state.pipeline_done:
+        disabled = (
+            st.session_state.dataset_path is None
+            or st.session_state.pipeline_done
+            or st.session_state.pipeline_running
+        )
+        if st.session_state.pipeline_running:
+            run_label = "Pipeline running…"
+        elif st.session_state.pipeline_done:
             run_label = "Pipeline complete ✓"
         elif st.session_state.dataset_path is None:
             run_label = "Select a dataset first"
@@ -1580,7 +1593,7 @@ def view_pipeline() -> None:
             run_label = "Run pipeline"
         run_clicked = st.button(run_label, disabled=disabled, use_container_width=True, type="primary")
     with col_reset:
-        if st.button("Reset", use_container_width=True):
+        if st.button("Reset", use_container_width=True, disabled=st.session_state.pipeline_running):
             st.session_state.pipeline_done = False
             st.session_state.completed_stages = set()
             st.session_state.final_report = None
@@ -1590,7 +1603,8 @@ def view_pipeline() -> None:
 
     log_container = st.container()
 
-    if run_clicked and st.session_state.dataset_path is not None:
+    if run_clicked and st.session_state.dataset_path is not None and not st.session_state.pipeline_running:
+        st.session_state.pipeline_running = True
         if not st.session_state.logfire_setup:
             try:
                 setup_logfire()
@@ -1609,6 +1623,8 @@ def view_pipeline() -> None:
         except Exception as exc:
             st.error(f"Pipeline failed: {exc}")
             raise
+        finally:
+            st.session_state.pipeline_running = False
 
 
 def view_report() -> None:
@@ -1640,10 +1656,9 @@ def view_report() -> None:
         _metric("Dup Groups", str(vs.get("duplicate_groups", 0))),
     ])
 
-    n_manual = len(final_report.manual_review_queue)
     _metric_grid([
         _metric("Applied", str(len(final_report.applied_actions)), variant="success"),
-        _metric("Manual Review", str(n_manual), variant="warning"),
+        _metric("Deferred", str(len(final_report.proposed_not_applied_actions)), variant="warning"),
         _metric("Failed", str(len(final_report.failed_actions))),
         _metric("Not needed", str(len(final_report.not_needed_actions))),
     ])

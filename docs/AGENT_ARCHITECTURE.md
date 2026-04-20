@@ -23,7 +23,7 @@ connection-error retries, usage limits, and optional model-setting overrides
                            |
                            v
             +--------------+-------------+
-            |         pipeline.py        |        VALIDATION HALF
+            |        validation/         |        VALIDATION HALF
             |                            |
             | dtype → schema →           |
             | completeness → consistency |
@@ -33,7 +33,7 @@ connection-error retries, usage limits, and optional model-setting overrides
                            |
                            v
             +--------------+-------------+
-            |  cleaning_core/            |        CLEANING HALF
+            |  cleaning/                 |        CLEANING HALF
             |  orchestrator.run_cleaning |
             |                            |
             |  remediation →             |
@@ -68,24 +68,24 @@ Argparse CLI. Responsibilities:
   `report`) plus `--reuse-*` flags, `--column`, `--cleaner-attempts`,
   `--verbose`.
 - Loads `.env`, calls `setup_logfire()`, dispatches to the right
-  `run_<stage>` helper in `pipeline.py` or `cleaning.py`.
+  `run_<stage>` helper from the `validation` or `cleaning` package.
 - `print_result` dumps structured output as JSON, stripping the
   base64-gzipped cleaned CSV payload for readability.
 
-### `cleaning.py` (21 lines)
+### `cleaning/__init__.py` (facade)
 
 Public facade for the cleaning stages. Re-exports the 5 entry points the CLI
 calls:
 
 ```python
-from cleaning_core.application    import run_cleaner_application
-from cleaning_core.generation     import run_cleaner_generation
-from cleaning_core.orchestrator   import run_cleaning
-from cleaning_core.remediation    import run_remediation_planning
-from cleaning_core.verification   import run_verify
+from cleaning.application    import run_cleaner_application
+from cleaning.generation     import run_cleaner_generation
+from cleaning.orchestrator   import run_cleaning
+from cleaning.remediation    import run_remediation_planning
+from cleaning.verification   import run_verify
 ```
 
-Everything else lives under `cleaning_core/` and should be imported directly.
+Everything else lives under `cleaning/` and can be imported directly.
 
 ### `agents.py` (558 lines)
 
@@ -96,16 +96,16 @@ observability.
 
 | Agent                              | Used in                          | Output model                  | Purpose                                                                                                                                      |
 |------------------------------------|----------------------------------|-------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------|
-| `dtype_inference_agent`            | `pipeline.run_dtype_inference`   | `DatasetDtypeInference`       | Infers pandas dtype + semantic role + detected pattern per column from a CSV sample.                                                         |
-| `schema_summary_agent`             | `pipeline.run_schema_validation` | `SchemaSummaryOutput`         | Writes a human-readable summary over the already-built `SchemaHandoff` (does not re-derive findings).                                        |
-| `completeness_analysis_agent`      | `pipeline.run_completeness_analysis` | `CompletenessAnalysisReport` | Reads the completeness profile, detects missing/placeholder tokens, flags sparse columns.                                                    |
-| `format_consistency_agent`         | `pipeline.run_column_format_check` | `ColumnConsistencyReport`   | *Slow-path only:* when schema has no detected pattern, reads `ColumnFormatFacts` and decides whether an inconsistency exists.                |
-| `anomaly_summary_agent`            | `pipeline.run_anomaly_detection` | `AnomalySummaryOutput`        | Summarises numeric-outlier + rare-category findings produced by heuristics.                                                                  |
-| `cross_column_summary_agent`       | `pipeline.run_cross_column_validation` | `CrossColumnSummaryOutput` | Summarises duplicate-like-columns, semantic-conflict, year-month-period and date-order findings.                                             |
-| `duplicate_summary_agent`          | `pipeline.run_duplicate_detection` | `DuplicateSummaryOutput`    | Summarises exact + near duplicate row groups.                                                                                                |
-| `column_cleaner_generator_agent`   | `cleaning_core.generation`       | `ColumnCleanerProgram`        | Writes a self-contained Python cleaner function for one column, enforced by a single grouped code-execution check (`UsageLimits(tool_calls_limit=1)`). |
-| `cleaner_repair_critic_agent`      | `cleaning_core.generation`       | `CleanerRepairDiagnosis`      | Diagnoses why the last generated cleaner failed host-side validation, prescribes `patch_style` + exact repairs.                              |
-| `narrative_report_agent`           | `cleaning_core.reporting`        | `NarrativeReport`             | Turns the `FinalPipelineReport` into the Markdown narrative saved next to the cleaned CSV.                                                   |
+| `dtype_inference_agent`            | `validation.run_dtype_inference`   | `DatasetDtypeInference`       | Infers pandas dtype + semantic role + detected pattern per column from a CSV sample.                                                         |
+| `schema_summary_agent`             | `validation.run_schema_validation` | `SchemaSummaryOutput`         | Writes a human-readable summary over the already-built `SchemaHandoff` (does not re-derive findings).                                        |
+| `completeness_analysis_agent`      | `validation.run_completeness_analysis` | `CompletenessAnalysisReport` | Reads the completeness profile, detects missing/placeholder tokens, flags sparse columns.                                                    |
+| `format_consistency_agent`         | `validation.run_column_format_check` | `ColumnConsistencyReport`   | *Slow-path only:* when schema has no detected pattern, reads `ColumnFormatFacts` and decides whether an inconsistency exists.                |
+| `anomaly_summary_agent`            | `validation.run_anomaly_detection` | `AnomalySummaryOutput`        | Summarises numeric-outlier + rare-category findings produced by heuristics.                                                                  |
+| `cross_column_summary_agent`       | `validation.run_cross_column_validation` | `CrossColumnSummaryOutput` | Summarises duplicate-like-columns, semantic-conflict, year-month-period and date-order findings.                                             |
+| `duplicate_summary_agent`          | `validation.run_duplicate_detection` | `DuplicateSummaryOutput`    | Summarises exact + near duplicate row groups.                                                                                                |
+| `column_cleaner_generator_agent`   | `cleaning.generation`       | `ColumnCleanerProgram`        | Writes a self-contained Python cleaner function for one column, enforced by a single grouped code-execution check (`UsageLimits(tool_calls_limit=1)`). |
+| `cleaner_repair_critic_agent`      | `cleaning.generation`       | `CleanerRepairDiagnosis`      | Diagnoses why the last generated cleaner failed host-side validation, prescribes `patch_style` + exact repairs.                              |
+| `narrative_report_agent`           | `cleaning.reporting`        | `NarrativeReport`             | Turns the `FinalPipelineReport` into the Markdown narrative saved next to the cleaned CSV.                                                   |
 
 `setup_logfire()` is also defined here and called from both the CLI and the
 Streamlit app.
@@ -138,39 +138,42 @@ Grouped by concern:
 
 Nothing in `models.py` makes LLM calls — it is pure schema.
 
-### `pipeline.py` (716 lines)
+### `validation/` — validation pipeline subpackage
 
-Validation-stage orchestration. One function per stage:
+One module per stage; every `run_<stage>` helper (and `build_validation_results`)
+is re-exported from `validation/__init__.py`:
 
-| Function                                 | Agent call               | Artifact written                           |
-|------------------------------------------|--------------------------|--------------------------------------------|
-| `run_dtype_inference`                    | dtype_inference_agent    | (returned in-memory, used by schema stage) |
-| `run_schema_validation`                  | schema_summary_agent     | `<dataset>.schema.json`                    |
-| `run_completeness_analysis`              | completeness_analysis_agent | `<dataset>.completeness.json`           |
-| `run_format_consistency_validation`      | format_consistency_agent (slow path only) | `<dataset>.consistency.json` |
-| `run_anomaly_detection`                  | anomaly_summary_agent    | `<dataset>.anomaly.json`                   |
-| `run_cross_column_validation`            | cross_column_summary_agent | `<dataset>.cross_column.json`            |
-| `run_duplicate_detection`                | duplicate_summary_agent  | `<dataset>.duplicates.json`                |
-| `build_validation_results`               | — (runs every stage)     | `<dataset>.validation_bundle.json`         |
+| Module                       | Function                                 | Agent call                                | Artifact written                           |
+|------------------------------|------------------------------------------|-------------------------------------------|--------------------------------------------|
+| `validation/schema.py`       | `run_dtype_inference`                    | dtype_inference_agent                     | (returned in-memory, used by schema stage) |
+| `validation/schema.py`       | `run_schema_validation`                  | schema_summary_agent                      | `<dataset>.schema.json`                    |
+| `validation/completeness.py` | `run_completeness_analysis`              | completeness_analysis_agent               | `<dataset>.completeness.json`              |
+| `validation/consistency.py`  | `run_format_consistency_validation`      | format_consistency_agent (slow path only) | `<dataset>.consistency.json`               |
+| `validation/anomaly.py`      | `run_anomaly_detection`                  | anomaly_summary_agent                     | `<dataset>.anomaly.json`                   |
+| `validation/cross_column.py` | `run_cross_column_validation`            | cross_column_summary_agent                | `<dataset>.cross_column.json`              |
+| `validation/duplicates.py`   | `run_duplicate_detection`                | duplicate_summary_agent                   | `<dataset>.duplicates.json`                |
+| `validation/bundle.py`       | `build_validation_results`               | — (runs every stage)                      | `<dataset>.validation_bundle.json`         |
 
 Key helpers:
 
-- `_summarize_validation_report(agent, prompt_text, report, fallback)` —
+- `validation/_summary.py::summarize_validation_report(agent, prompt_text, report, fallback)` —
   shared boilerplate for anomaly / cross-column / duplicate summary calls.
   Keeps all three paths identical and fallback-safe.
-- `run_column_format_check` — per-column fast-path vs slow-path decision.
-  If schema already carries a `detected_pattern` we skip the LLM and build
-  the `FormatConsistencyFinding` directly from the profiler output; only
-  when the schema pattern is absent do we invoke `format_consistency_agent`.
-- `_build_suggested_strategy` — enumerates every outlier shape group with
-  representative examples so the downstream cleaner generator has a concrete
-  per-shape brief.
-- `_duplicate_semantic_suppressed_columns` — suppresses anomaly findings on
-  the losing side of a duplicate-column group so we don't double-report.
+- `validation/consistency.py::run_column_format_check` — per-column fast-path
+  vs slow-path decision. If the schema already carries a `detected_pattern`
+  we skip the LLM and build the `FormatConsistencyFinding` directly from
+  the profiler output; only when the schema pattern is absent do we invoke
+  `format_consistency_agent`.
+- `validation/consistency.py::_build_suggested_strategy` — enumerates every
+  outlier shape group with representative examples so the downstream cleaner
+  generator has a concrete per-shape brief.
+- `validation/anomaly.py::_duplicate_semantic_suppressed_columns` — suppresses
+  anomaly findings on the losing side of a duplicate-column group so we don't
+  double-report.
 
 ---
 
-## `cleaning_core/` — cleaning pipeline subpackage
+## `cleaning/` — cleaning pipeline subpackage
 
 ### `__init__.py` (16 lines)
 
@@ -194,7 +197,7 @@ run_cleaning(
 Sequence:
 
 1. `_resolve_validation_results` — either reuse cached bundle or run
-   `pipeline.build_validation_results`.
+   `validation.build_validation_results`.
 2. `_resolve_remediation_plan` — either reuse cached plan or run
    `run_remediation_planning`.
 3. `_build_cleaning_requests` — for each format-consistency finding, build a
@@ -394,11 +397,11 @@ derivation used to name cleaner files and to match column renames.
 ## `tools/` — profiling & helpers consumed by agents
 
 Nothing in `tools/` calls an LLM directly. The package is split by concern;
-the thin `tools.tools` facade re-exports the symbols that cross-cut into
-`pipeline.py`, `models.py`, and `cleaning_core/*`. Internal helpers stay
+the thin `tools/__init__.py` facade re-exports the symbols that cross-cut
+into `validation/*`, `models.py`, and `cleaning/*`. Internal helpers stay
 private to their module to keep the public API obvious.
 
-### `tools/tools.py` (78 lines)
+### `tools/__init__.py` (facade, ~78 lines)
 
 Public facade. Re-exports: `PLACEHOLDER_TOKENS`, `SchemaDuplicateGroup`,
 `ColumnFormatFacts`, `FormatOutlierExample`, attachment helpers
@@ -489,12 +492,12 @@ summary agents (the agents summarise, they do not re-discover):
 
 | Task                                                          | Start here                                            |
 |---------------------------------------------------------------|-------------------------------------------------------|
-| Add a new validation stage                                    | `pipeline.py` + `models.py` + new agent in `agents.py` + cache helpers in `cache.py` |
-| Change what the cleaner generator sees                        | `cleaning_core/request.py`  +  `cleaning_core/generation.py::_build_cleaner_generation_prompt` |
-| Add a new host-side failure category                          | `cleaning_core/validation.py` (register category, emit issue) |
-| Tune generator retry/temperature behaviour                    | `cleaning_core/generation.py::run_column_cleaner_program` |
+| Add a new validation stage                                    | new module in `validation/` + `models.py` + new agent in `agents.py` + cache helpers in `cache.py` |
+| Change what the cleaner generator sees                        | `cleaning/request.py`  +  `cleaning/generation.py::_build_cleaner_generation_prompt` |
+| Add a new host-side failure category                          | `cleaning/validation.py` (register category, emit issue) |
+| Tune generator retry/temperature behaviour                    | `cleaning/generation.py::run_column_cleaner_program` |
 | Change the generator / critic instructions                    | `agents.py::column_cleaner_generator_agent` / `cleaner_repair_critic_agent` |
-| Add a new remediation action type                             | `cleaning_core/remediation.py` + `cleaning_core/application.py` |
-| Change the narrative output                                   | `agents.py::narrative_report_agent` + `cleaning_core/reporting.py` |
-| Add a new cross-column / duplicate / anomaly check            | `tools/quality_tools.py` + wire into the matching `pipeline.run_*` |
+| Add a new remediation action type                             | `cleaning/remediation.py` + `cleaning/application.py` |
+| Change the narrative output                                   | `agents.py::narrative_report_agent` + `cleaning/reporting.py` |
+| Add a new cross-column / duplicate / anomaly check            | `tools/quality_tools.py` + wire into the matching `validation.run_*` |
 | Change agent retry / timeout / temperature override plumbing  | `tools/common_tools.py::run_agent_with_backoff` |

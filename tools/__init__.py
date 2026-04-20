@@ -1,6 +1,6 @@
 """Public facade for the ``tools`` package.
 
-Thin re-export layer so callers can do ``from tools.tools import X`` without
+Thin re-export layer so callers can do ``from tools import X`` without
 caring which specialised submodule (common / schema / format / completeness /
 quality) defines ``X``. Only symbols actually imported by code outside the
 ``tools`` package are surfaced here — internal helpers stay private to their

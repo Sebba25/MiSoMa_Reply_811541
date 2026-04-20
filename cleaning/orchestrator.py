@@ -21,8 +21,8 @@ from models import (
     OrchestrationStepResult,
     RemediationPlan,
 )
-from pipeline import build_validation_results
-from tools.tools import build_column_format_facts, load_dataset_frame
+from validation import build_validation_results
+from tools import build_column_format_facts, load_dataset_frame
 
 from .application import run_cleaner_application_with_plan
 from .generation import run_cleaner_generation
@@ -147,7 +147,10 @@ def run_cleaning(
     )
     cleaning_report, execution_reports, remediation_plan = run_cleaner_application_with_plan(path, remediation_plan)
     verification_report = run_verify(path)
-    final_report = build_final_report(validation_results, remediation_plan, cleaning_report, verification_report)
+    final_report = build_final_report(
+        validation_results, remediation_plan, cleaning_report, verification_report,
+        dataset_path=path,
+    )
     save_final_report(path, final_report)
     narrative = generate_narrative_report(final_report)
     save_narrative_report(path, narrative)

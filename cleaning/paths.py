@@ -12,7 +12,7 @@ import json
 from pathlib import Path
 
 from models import ColumnCleanerProgram, GeneratedCleanerArtifact
-from tools.tools import normalized_schema_name
+from tools import normalized_schema_name
 
 
 def cleaning_cache_dir(path: Path) -> Path:

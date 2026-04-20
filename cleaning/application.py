@@ -23,7 +23,7 @@ from models import (
     RemediationAction,
     RemediationPlan,
 )
-from tools.tools import gzip_text_to_base64, load_dataset_frame
+from tools import gzip_text_to_base64, load_dataset_frame
 
 from .paths import cleaned_dataset_path, cleaning_cache_dir, load_cleaner_manifest, save_cleaner_manifest
 from .runtime import apply_cleaner_to_series
@@ -218,7 +218,16 @@ def _apply_exact_duplicate_column_drops(
 def run_cleaner_application_with_plan(
     path: Path,
     remediation_plan: RemediationPlan | None = None,
+    on_event=None,
 ) -> tuple[CleaningReport, list[ColumnCleanerExecutionReport], RemediationPlan | None]:
+    def _emit(message: str) -> None:
+        if on_event is None:
+            return
+        try:
+            on_event(message)
+        except Exception:
+            pass
+
     if remediation_plan is None:
         try:
             remediation_plan = load_remediation_plan(path)
@@ -239,9 +248,10 @@ def run_cleaner_application_with_plan(
     unresolved_risks: list[str] = []
 
     print(f"\n[apply] step 1 - format cleaners ({len(artifacts)} columns)", file=sys.stderr)
+    _emit(f"step 1 — running {len(artifacts)} format cleaner{'s' if len(artifacts) != 1 else ''}")
     if not artifacts:
         print("  no cleaner manifest found or no generated cleaners recorded.", file=sys.stderr)
-    for artifact in artifacts:
+    for idx, artifact in enumerate(artifacts, start=1):
         program = _load_artifact_program(artifact)
         if program is None:
             unresolved_risks.append(f"{artifact.column_name}: cleaner file missing at {artifact.code_path}")
@@ -256,8 +266,10 @@ def run_cleaner_application_with_plan(
         if report.execution_ok and cleaned_series is not None:
             df[artifact.column_name] = cleaned_series
             print(f"  '{artifact.column_name}' OK - {report.changed_rows} rows changed", file=sys.stderr)
+            _emit(f"  [{idx}/{len(artifacts)}] ✓ '{artifact.column_name}' — {report.changed_rows} rows changed")
         else:
             print(f"  '{artifact.column_name}' FAILED - {'; '.join(report.unresolved_risks)}", file=sys.stderr)
+            _emit(f"  [{idx}/{len(artifacts)}] ✗ '{artifact.column_name}' failed")
             unresolved_risks.extend(f"{artifact.column_name}: {risk}" for risk in report.unresolved_risks)
 
         applied_artifacts.append(
@@ -267,6 +279,7 @@ def run_cleaner_application_with_plan(
                 code_path=artifact.code_path,
                 changed_rows=report.changed_rows,
                 summary=report.summary,
+                example_transformations=list(artifact.example_transformations),
             )
         )
 
@@ -290,8 +303,10 @@ def run_cleaner_application_with_plan(
     )
 
     print("\n[apply] step 2 - placeholder -> null (from completeness cache)", file=sys.stderr)
+    _emit("step 2 — replacing placeholder tokens with null")
     df, total_replaced, placeholder_by_column = _apply_placeholder_nulls(df, path)
     print(f"  total placeholder replacements: {total_replaced}", file=sys.stderr)
+    _emit(f"  {total_replaced} placeholder values replaced across {len(placeholder_by_column)} columns")
     for action in actions:
         if action.action_type != "replace_placeholders_with_null":
             continue
@@ -299,6 +314,7 @@ def run_cleaner_application_with_plan(
         action.status = "applied" if placeholder_by_column.get(column_name, 0) > 0 else "not_needed"
 
     print("\n[apply] step 3 - exact duplicate column drops (from remediation plan)", file=sys.stderr)
+    _emit("step 3 — dropping exact duplicate columns")
     if actions:
         df, drop_risks = _apply_exact_duplicate_column_drops(df, actions)
         unresolved_risks.extend(drop_risks)
@@ -306,7 +322,10 @@ def run_cleaner_application_with_plan(
         print("  no remediation plan loaded - skipping exact duplicate column drops.", file=sys.stderr)
 
     print("\n[apply] step 4 - column renames (from schema cache)", file=sys.stderr)
+    _emit("step 4 — applying schema renames")
     df, rename_map = _apply_column_renames(df, path)
+    if rename_map:
+        _emit(f"  renamed {len(rename_map)} columns")
     for action in actions:
         if action.action_type != "rename_column":
             continue
@@ -320,7 +339,11 @@ def run_cleaner_application_with_plan(
             action.status = "not_needed"
 
     print("\n[apply] step 5 - dtype casting (from schema cache)", file=sys.stderr)
+    _emit("step 5 — casting dtypes")
     df, cast_results = _apply_dtype_casts(df, path)
+    _applied_casts = sum(1 for s in cast_results.values() if s == "applied")
+    if _applied_casts:
+        _emit(f"  {_applied_casts} dtype cast{'s' if _applied_casts != 1 else ''} applied")
     for action in actions:
         if action.action_type != "cast_dtype":
             continue
@@ -349,12 +372,12 @@ def run_cleaner_application_with_plan(
         cleaned_csv_gzip_base64=gzip_text_to_base64(df.to_csv(index=False)),
         summary=(
             f"Applied {len(applied_artifacts)} format cleaners, replaced {total_replaced} placeholder values, "
-            f"renamed {len(rename_map)} columns, and cast dtypes. Cleaned dataset saved to {cleaned_path}."
+            f"renamed {len(rename_map)} columns, and cast dtypes. Cleaned dataset saved to `{cleaned_path.as_posix()}`."
         ),
     )
     return cleaning_report, execution_reports, remediation_plan
 
 
-def run_cleaner_application(path: Path) -> CleaningReport:
-    cleaning_report, _, _ = run_cleaner_application_with_plan(path)
+def run_cleaner_application(path: Path, on_event=None) -> CleaningReport:
+    cleaning_report, _, _ = run_cleaner_application_with_plan(path, on_event=on_event)
     return cleaning_report

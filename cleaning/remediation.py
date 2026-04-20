@@ -13,8 +13,8 @@ from pathlib import Path
 
 from cache import load_remediation_plan, load_validation_results, save_remediation_plan
 from models import OrchestrationStepResult, RemediationAction, RemediationPlan, SchemaColumnEntry
-from pipeline import build_validation_results
-from tools.tools import normalized_schema_name
+from validation import build_validation_results
+from tools import normalized_schema_name
 
 
 def _action_id(prefix: str, *parts: object) -> str:

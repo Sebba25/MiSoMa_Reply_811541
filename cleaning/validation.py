@@ -22,7 +22,7 @@ import re
 import pandas as pd
 
 from models import CleanerValidationIssue, ColumnCleanerProgram, ColumnCleaningRequest, ExampleTransformation
-from tools.tools import matches_numeric_schema_pattern, value_shape
+from tools import matches_numeric_schema_pattern, value_shape
 
 from .runtime import load_cleaner_callable
 
@@ -103,6 +103,44 @@ def matches_dominant_datetime_format(value: str, request: ColumnCleaningRequest)
     if pattern is None:
         return None
     return bool(pattern.fullmatch(value))
+
+
+def _suggest_corrected_datetime(raw_input: str, canonical_example: str) -> str | None:
+    """Best-effort: parse raw_input with pandas (dayfirst) and reformat to match canonical_example's shape."""
+    try:
+        parsed = pd.to_datetime(raw_input, dayfirst=True, format="mixed")
+    except Exception:
+        return None
+    tail_match = re.match(r"^\d{4}-\d{2}-\d{2}(.*)", canonical_example)
+    tail = tail_match.group(1) if tail_match else ""
+    return parsed.strftime("%Y-%m-%d") + tail
+
+
+def _diagnose_datetime_component_order(
+    raw_input: str,
+    actual_output: str,
+    canonical_example: str,
+) -> str:
+    """Return a one-sentence diagnosis when digit groups appear in wrong order."""
+    input_groups = re.findall(r"\d+", raw_input)
+    actual_groups = re.findall(r"\d+", actual_output)[:3]
+    canonical_groups = re.findall(r"\d+", canonical_example)[:3]
+    if not (input_groups and canonical_groups):
+        return ""
+    canonical_year = next((g for g in canonical_groups if len(g) == 4), None)
+    actual_year = actual_groups[0] if actual_groups else None
+    if canonical_year and actual_year and canonical_year != actual_year:
+        if canonical_year in input_groups and actual_year not in input_groups:
+            return (
+                f" The 4-digit year {canonical_year!r} from the input was recombined incorrectly into {actual_year!r}."
+                f" Split on the delimiter and identify the 4-digit component explicitly (e.g. int(part) > 999) rather than relying on index position."
+            )
+        if canonical_year in input_groups:
+            return (
+                f" The 4-digit year {canonical_year!r} must appear first in the output (YYYY-MM-DD);"
+                f" your output put it as {actual_year!r}. Reorder components: identify which split part is the year, which is the month, which is the day."
+            )
+    return ""
 
 
 def build_validation_issue(
@@ -300,6 +338,9 @@ def validate_generated_cleaner_program(
         if require_fixed_shape:
             if request.target_dtype == "datetime64[ns]" and target_datetime_example is not None:
                 if matches_dominant_datetime_format(cleaned_str, request) is False:
+                    suggested = _suggest_corrected_datetime(value, target_datetime_example)
+                    diagnosis = _diagnose_datetime_component_order(value, cleaned_str, target_datetime_example)
+                    suggestion_note = f" Correct output for this input: {suggested!r}." if suggested else ""
                     issues.append(
                         build_validation_issue(
                             category="wrong_output_shape",
@@ -307,12 +348,14 @@ def validate_generated_cleaner_program(
                             message=(
                                 f"Inconsistent example {value!r} cleaned to {cleaned_str!r}, which does not match "
                                 f"the canonical datetime format used by dominant examples such as {target_datetime_example!r}."
+                                f"{diagnosis}{suggestion_note}"
                             ),
                             input_value=value,
                             actual_output=cleaned_str,
                             expected_behavior=(
                                 "produce output matching the canonical datetime layout shown by dominant examples, "
                                 f"for example {target_datetime_example!r}."
+                                + (f" Expected for this input: {suggested!r}." if suggested else "")
                             ),
                         )
                     )

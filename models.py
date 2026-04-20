@@ -4,7 +4,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from tools.tools import SchemaDuplicateGroup
+from tools import SchemaDuplicateGroup
 
 
 # --- Type Literals ---
@@ -177,6 +177,7 @@ class FindingDiff(BaseModel):
     after_inconsistent_rows: int = Field(ge=0)
     reduction_pct: float = Field(ge=-100)
     remaining_examples: list[str] = Field(default_factory=list)
+    renamed_to: str | None = None
 
 
 class ConsistencyVerificationReport(BaseModel):
@@ -300,6 +301,14 @@ class FinalPipelineReport(BaseModel):
     manual_review_queue: list[RemediationAction] = Field(default_factory=list)
     cleaning_summary: str = ""
     verification_summary: str = ""
+    verification_diffs: list[FindingDiff] = Field(default_factory=list)
+    generated_cleaners: list["GeneratedCleanerArtifact"] = Field(default_factory=list)
+    total_rows_cleaned: int = 0
+    non_null_counts_cleaned: dict[str, int] = Field(default_factory=dict)
+    completeness_details: list[CompletenessColumnFinding] = Field(default_factory=list)
+    anomaly_findings: list[AnomalyFinding] = Field(default_factory=list)
+    cross_column_findings: list[CrossColumnFinding] = Field(default_factory=list)
+    duplicate_groups: list[DuplicateRecordGroup] = Field(default_factory=list)
     unresolved_risks: list[str] = Field(default_factory=list)
     summary: str = ""
 
@@ -457,6 +466,7 @@ class GeneratedCleanerArtifact(BaseModel):
     code_path: str
     changed_rows: int = Field(ge=0)
     summary: str
+    example_transformations: list[ExampleTransformation] = Field(default_factory=list)
 
 
 class CleaningReport(BaseModel):

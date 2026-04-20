@@ -10,8 +10,8 @@ from dotenv import load_dotenv
 
 from agents import setup_logfire
 from cleaning import run_cleaner_application, run_cleaner_generation, run_cleaning, run_remediation_planning, run_verify
-from cleaning_core.reporting import generate_narrative_report, save_narrative_report
-from pipeline import (
+from cleaning.reporting import generate_narrative_report, save_narrative_report
+from validation import (
     build_validation_results,
     run_completeness_analysis,
     run_dtype_inference,
@@ -146,7 +146,7 @@ def run_validation_bundle(args: argparse.Namespace, dataset_path: Path):
 
 
 def run_narrative_report(args: argparse.Namespace, dataset_path: Path):
-    from cleaning_core.paths import final_report_path
+    from cleaning.paths import final_report_path
     from models import FinalPipelineReport
 
     report_path = final_report_path(dataset_path)
