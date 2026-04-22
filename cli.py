@@ -33,12 +33,6 @@ VISIBLE_STAGES = (
     "report",
 )
 
-STAGE_ALIASES = {
-    "all": "validate",
-    "pipeline": "clean",
-}
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the dataset validation and cleaning pipeline.")
     parser.add_argument(
@@ -53,8 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="{" + ",".join(VISIBLE_STAGES) + "}",
         help=(
             "Top-level stage. Use 'validate' to build the validation bundle, 'remediate' "
-            "to build the remediation plan, and 'clean' for the full remediation/generate/apply/verify flow. Legacy aliases: 'all' -> 'validate', "
-            "'pipeline' -> 'clean'."
+            "to build the remediation plan, and 'clean' for the full remediation/generate/apply/verify flow."
         ),
     )
     parser.add_argument(
@@ -122,7 +115,6 @@ def build_parser() -> argparse.ArgumentParser:
 
 def normalize_stage(stage: str) -> str:
     normalized = stage.strip().lower()
-    normalized = STAGE_ALIASES.get(normalized, normalized)
     if normalized not in VISIBLE_STAGES:
         supported = ", ".join(VISIBLE_STAGES)
         raise ValueError(f"Unknown stage {stage!r}. Supported stages: {supported}.")

@@ -70,6 +70,95 @@ def _emit(on_event: ProgressCallback | None, message: str) -> None:
         pass
 
 
+def _stagnation_temperature(consecutive_stagnant_attempts: int) -> float:
+    """Temperature ramp 0.2 -> 0.5 used to escape deterministic repetition."""
+    return min(0.2 + 0.1 * (consecutive_stagnant_attempts - 1), 0.5)
+
+
+class _GenerationProgress:
+    """Renders generator/critic loop events. Default impl writes to stderr
+    and forwards a short message to an optional UI callback (used by Streamlit).
+
+    Subclass and override if a different emission strategy is needed.
+    """
+
+    def __init__(self, on_event: ProgressCallback | None = None) -> None:
+        self._on_event = on_event
+
+    def _forward(self, message: str) -> None:
+        _emit(self._on_event, message)
+
+    def attempt_start(self, column_name: str, attempt: int, total: int, stagnation: bool) -> None:
+        print(
+            f"[orchestrator][generator] column='{column_name}' attempt={attempt}/{total}"
+            + (" [STAGNATION OVERRIDE active, temp bumped]" if stagnation else ""),
+            file=sys.stderr,
+        )
+        self._forward(
+            f"  · attempt {attempt}/{total}"
+            + (" (stagnation override)" if stagnation else "")
+        )
+
+    def generator_accepted(self, column_name: str, attempt: int) -> None:
+        print(
+            f"[orchestrator][generator] column='{column_name}' accepted on attempt {attempt}",
+            file=sys.stderr,
+        )
+        self._forward(f"  ✓ accepted on attempt {attempt}")
+
+    def validation_failed(
+        self,
+        column_name: str,
+        attempt: int,
+        total: int,
+        leading_issue: CleanerValidationIssue,
+    ) -> None:
+        label = (
+            "construction-failure"
+            if leading_issue.category == "non_self_contained_function"
+            else "failed"
+        )
+        print(
+            f"[orchestrator][validator] column='{column_name}' {label} attempt {attempt}/{total}: "
+            f"{leading_issue.message}",
+            file=sys.stderr,
+        )
+        short_reason = leading_issue.message.split(".")[0][:120]
+        self._forward(f"  ✗ attempt {attempt} {label}: {short_reason}")
+
+    def stagnation_noted(self, column_name: str, attempt: int, total: int, reason: str) -> None:
+        print(
+            f"[orchestrator][validator] column='{column_name}' no-progress warning on attempt {attempt}/{total}: "
+            f"model {reason}; continuing until retry budget is exhausted unless the critic stops the run",
+            file=sys.stderr,
+        )
+
+    def critic_started(self, column_name: str, n_issues: int) -> None:
+        print(
+            f"[orchestrator][critic] column='{column_name}' reviewing {n_issues} validation issues",
+            file=sys.stderr,
+        )
+        self._forward(f"  → critic reviewing {n_issues} issues")
+
+    def critic_diagnosis(self, column_name: str, diagnosis: CleanerRepairDiagnosis) -> None:
+        print(
+            f"[orchestrator][critic] column='{column_name}' diagnosis: {diagnosis.root_cause}",
+            file=sys.stderr,
+        )
+        for repair in diagnosis.exact_repairs[:3]:
+            actual = f", actual={repair.actual_output!r}" if repair.actual_output is not None else ""
+            expected = f", expected={repair.expected_output!r}" if repair.expected_output is not None else ""
+            print(
+                f"[orchestrator][critic] column='{column_name}' repair-example: "
+                f"input={repair.input_value!r}{actual}{expected} | {repair.fix_note}",
+                file=sys.stderr,
+            )
+
+
+def _make_progress(on_event: ProgressCallback | None) -> _GenerationProgress:
+    return _GenerationProgress(on_event)
+
+
 @contextmanager
 def _generation_lock(path):
     """Filesystem lock so two concurrent generators on the same dataset can't interleave.
@@ -304,114 +393,68 @@ def run_column_cleaner_program(
     max_attempts: int = 10,
     on_event: ProgressCallback | None = None,
 ) -> ColumnCleanerProgram:
+    """Generator / critic / host-validator loop for a single column.
+
+    Per attempt:
+      1. Build the generator prompt (with failure context + optional stagnation brief).
+      2. Ask the generator agent for a self-contained cleaner program.
+      3. Validate the program host-side (no LLM).
+      4. If valid, return the verified program.
+      5. Otherwise: detect stagnation, invoke the critic, feed its diagnosis forward.
+    """
+    progress = _make_progress(on_event)
     previous_program: ColumnCleanerProgram | None = None
     validation_issues: list[CleanerValidationIssue] = []
     repair_diagnosis: CleanerRepairDiagnosis | None = None
-    last_issue_fingerprint: tuple[str, ...] | None = None
-    consecutive_stagnant_attempts = 0
+    last_fingerprint: tuple[str, ...] | None = None
+    consecutive_stagnant = 0
 
     for attempt in range(1, max_attempts + 1):
-        stagnation_detected = consecutive_stagnant_attempts >= 1
-        print(
-            f"[orchestrator][generator] column='{request.column_name}' attempt={attempt}/{max_attempts}"
-            + (f" [STAGNATION OVERRIDE active, temp bumped]" if stagnation_detected else ""),
-            file=sys.stderr,
-        )
-        _emit(
-            on_event,
-            f"  · attempt {attempt}/{max_attempts}"
-            + (" (stagnation override)" if stagnation_detected else ""),
-        )
+        stagnation = consecutive_stagnant >= 1
+        progress.attempt_start(request.column_name, attempt, max_attempts, stagnation)
+
         prompt = _build_cleaner_generation_prompt(
-            dataset_name,
-            request,
+            dataset_name, request,
             previous_program=previous_program,
             validation_issues=validation_issues,
             repair_diagnosis=repair_diagnosis,
             attempt_number=attempt,
-            stagnation_detected=stagnation_detected,
+            stagnation_detected=stagnation,
         )
+        model_settings = {"temperature": _stagnation_temperature(consecutive_stagnant)} if stagnation else None
         try:
-            # Escalate temperature to break deterministic repetition when the model keeps
-            # emitting the same code. Step up further on longer stagnant streaks.
-            override_settings: dict | None = None
-            if stagnation_detected:
-                bumped_temp = min(0.2 + 0.1 * (consecutive_stagnant_attempts - 1), 0.5)
-                override_settings = {"temperature": bumped_temp}
             program = run_agent_with_backoff(
-                column_cleaner_generator_agent,
-                prompt,
+                column_cleaner_generator_agent, prompt,
                 usage_limits=GENERATOR_USAGE_LIMITS,
-                model_settings=override_settings,
+                model_settings=model_settings,
             ).output
         except UsageLimitExceeded as error:
             raise ValueError(
                 "Generator exceeded the one-code-execution limit. "
                 "This prevents hidden self-repair loops; simplify the prompt or raise the explicit limit if needed."
             ) from error
+
         validation_issues = validate_generated_cleaner_program(request, program)
         if not validation_issues:
-            program = rebuild_verified_program(request, program)
-            print(
-                f"[orchestrator][generator] column='{request.column_name}' accepted on attempt {attempt}",
-                file=sys.stderr,
-            )
-            _emit(on_event, f"  ✓ accepted on attempt {attempt}")
-            return program
+            progress.generator_accepted(request.column_name, attempt)
+            return rebuild_verified_program(request, program)
+        progress.validation_failed(request.column_name, attempt, max_attempts, validation_issues[0])
 
-        issue_fingerprint = validation_issue_fingerprint(validation_issues)
-        same_code_as_previous = (
-            previous_program is not None
-            and program.python_code.strip() == previous_program.python_code.strip()
-        )
-        repeated_failure = last_issue_fingerprint is not None and issue_fingerprint == last_issue_fingerprint
-
-        leading_issue = validation_issues[0]
-        failure_label = (
-            "construction-failure"
-            if leading_issue.category == "non_self_contained_function"
-            else "failed"
-        )
-        print(
-            f"[orchestrator][validator] column='{request.column_name}' {failure_label} attempt {attempt}/{max_attempts}: "
-            f"{leading_issue.message}",
-            file=sys.stderr,
-        )
-        short_reason = leading_issue.message.split(".")[0][:120]
-        _emit(on_event, f"  ✗ attempt {attempt} {failure_label}: {short_reason}")
-
-        if same_code_as_previous or repeated_failure:
-            reason = "repeated the same code" if same_code_as_previous else "repeated the same host-side failures"
-            print(
-                f"[orchestrator][validator] column='{request.column_name}' no-progress warning on attempt {attempt}/{max_attempts}: model {reason}; continuing until retry budget is exhausted unless the critic stops the run",
-                file=sys.stderr,
-            )
-            consecutive_stagnant_attempts += 1
+        fingerprint = validation_issue_fingerprint(validation_issues)
+        same_code = previous_program is not None and program.python_code.strip() == previous_program.python_code.strip()
+        repeated_failure = last_fingerprint is not None and fingerprint == last_fingerprint
+        if same_code or repeated_failure:
+            reason = "repeated the same code" if same_code else "repeated the same host-side failures"
+            progress.stagnation_noted(request.column_name, attempt, max_attempts, reason)
+            consecutive_stagnant += 1
         else:
-            consecutive_stagnant_attempts = 0
-
-        previous_program = program
-        last_issue_fingerprint = issue_fingerprint
+            consecutive_stagnant = 0
+        previous_program, last_fingerprint = program, fingerprint
 
         if attempt < max_attempts:
-            print(
-                f"[orchestrator][critic] column='{request.column_name}' reviewing {len(validation_issues)} validation issues",
-                file=sys.stderr,
-            )
-            _emit(on_event, f"  → critic reviewing {len(validation_issues)} issues")
+            progress.critic_started(request.column_name, len(validation_issues))
             repair_diagnosis = run_cleaner_repair_critic(dataset_name, request, program, validation_issues)
-            print(
-                f"[orchestrator][critic] column='{request.column_name}' diagnosis: {repair_diagnosis.root_cause}",
-                file=sys.stderr,
-            )
-            for repair in repair_diagnosis.exact_repairs[:3]:
-                actual = f", actual={repair.actual_output!r}" if repair.actual_output is not None else ""
-                expected = f", expected={repair.expected_output!r}" if repair.expected_output is not None else ""
-                print(
-                    f"[orchestrator][critic] column='{request.column_name}' repair-example: "
-                    f"input={repair.input_value!r}{actual}{expected} | {repair.fix_note}",
-                    file=sys.stderr,
-                )
+            progress.critic_diagnosis(request.column_name, repair_diagnosis)
             if not repair_diagnosis.should_retry:
                 failure_lines = "\n".join(f"- {format_validation_issue(issue)}" for issue in validation_issues[:10])
                 raise ValueError(
@@ -432,43 +475,32 @@ async def run_column_cleaner_program_async(
     max_attempts: int = 10,
     on_event: ProgressCallback | None = None,
 ) -> ColumnCleanerProgram:
+    """Async twin of run_column_cleaner_program with identical control flow."""
+    progress = _make_progress(on_event)
     previous_program: ColumnCleanerProgram | None = None
     validation_issues: list[CleanerValidationIssue] = []
     repair_diagnosis: CleanerRepairDiagnosis | None = None
-    last_issue_fingerprint: tuple[str, ...] | None = None
-    consecutive_stagnant_attempts = 0
+    last_fingerprint: tuple[str, ...] | None = None
+    consecutive_stagnant = 0
 
     for attempt in range(1, max_attempts + 1):
-        stagnation_detected = consecutive_stagnant_attempts >= 1
-        print(
-            f"[orchestrator][generator] column='{request.column_name}' attempt={attempt}/{max_attempts}"
-            + (f" [STAGNATION OVERRIDE active, temp bumped]" if stagnation_detected else ""),
-            file=sys.stderr,
-        )
-        _emit(
-            on_event,
-            f"  - attempt {attempt}/{max_attempts}"
-            + (" (stagnation override)" if stagnation_detected else ""),
-        )
+        stagnation = consecutive_stagnant >= 1
+        progress.attempt_start(request.column_name, attempt, max_attempts, stagnation)
+
         prompt = _build_cleaner_generation_prompt(
-            dataset_name,
-            request,
+            dataset_name, request,
             previous_program=previous_program,
             validation_issues=validation_issues,
             repair_diagnosis=repair_diagnosis,
             attempt_number=attempt,
-            stagnation_detected=stagnation_detected,
+            stagnation_detected=stagnation,
         )
+        model_settings = {"temperature": _stagnation_temperature(consecutive_stagnant)} if stagnation else None
         try:
-            override_settings: dict | None = None
-            if stagnation_detected:
-                bumped_temp = min(0.2 + 0.1 * (consecutive_stagnant_attempts - 1), 0.5)
-                override_settings = {"temperature": bumped_temp}
             result = await run_agent_with_backoff_async(
-                column_cleaner_generator_agent,
-                prompt,
+                column_cleaner_generator_agent, prompt,
                 usage_limits=GENERATOR_USAGE_LIMITS,
-                model_settings=override_settings,
+                model_settings=model_settings,
             )
             program = result.output
         except UsageLimitExceeded as error:
@@ -476,71 +508,30 @@ async def run_column_cleaner_program_async(
                 "Generator exceeded the one-code-execution limit. "
                 "This prevents hidden self-repair loops; simplify the prompt or raise the explicit limit if needed."
             ) from error
+
         validation_issues = validate_generated_cleaner_program(request, program)
         if not validation_issues:
-            program = rebuild_verified_program(request, program)
-            print(
-                f"[orchestrator][generator] column='{request.column_name}' accepted on attempt {attempt}",
-                file=sys.stderr,
-            )
-            _emit(on_event, f"  accepted on attempt {attempt}")
-            return program
+            progress.generator_accepted(request.column_name, attempt)
+            return rebuild_verified_program(request, program)
+        progress.validation_failed(request.column_name, attempt, max_attempts, validation_issues[0])
 
-        issue_fingerprint = validation_issue_fingerprint(validation_issues)
-        same_code_as_previous = (
-            previous_program is not None
-            and program.python_code.strip() == previous_program.python_code.strip()
-        )
-        repeated_failure = last_issue_fingerprint is not None and issue_fingerprint == last_issue_fingerprint
-
-        leading_issue = validation_issues[0]
-        failure_label = (
-            "construction-failure"
-            if leading_issue.category == "non_self_contained_function"
-            else "failed"
-        )
-        print(
-            f"[orchestrator][validator] column='{request.column_name}' {failure_label} attempt {attempt}/{max_attempts}: "
-            f"{leading_issue.message}",
-            file=sys.stderr,
-        )
-        short_reason = leading_issue.message.split(".")[0][:120]
-        _emit(on_event, f"  x attempt {attempt} {failure_label}: {short_reason}")
-
-        if same_code_as_previous or repeated_failure:
-            reason = "repeated the same code" if same_code_as_previous else "repeated the same host-side failures"
-            print(
-                f"[orchestrator][validator] column='{request.column_name}' no-progress warning on attempt {attempt}/{max_attempts}: model {reason}; continuing until retry budget is exhausted unless the critic stops the run",
-                file=sys.stderr,
-            )
-            consecutive_stagnant_attempts += 1
+        fingerprint = validation_issue_fingerprint(validation_issues)
+        same_code = previous_program is not None and program.python_code.strip() == previous_program.python_code.strip()
+        repeated_failure = last_fingerprint is not None and fingerprint == last_fingerprint
+        if same_code or repeated_failure:
+            reason = "repeated the same code" if same_code else "repeated the same host-side failures"
+            progress.stagnation_noted(request.column_name, attempt, max_attempts, reason)
+            consecutive_stagnant += 1
         else:
-            consecutive_stagnant_attempts = 0
-
-        previous_program = program
-        last_issue_fingerprint = issue_fingerprint
+            consecutive_stagnant = 0
+        previous_program, last_fingerprint = program, fingerprint
 
         if attempt < max_attempts:
-            print(
-                f"[orchestrator][critic] column='{request.column_name}' reviewing {len(validation_issues)} validation issues",
-                file=sys.stderr,
-            )
-            _emit(on_event, f"  -> critic reviewing {len(validation_issues)} issues")
+            progress.critic_started(request.column_name, len(validation_issues))
             repair_diagnosis = await run_cleaner_repair_critic_async(
                 dataset_name, request, program, validation_issues
             )
-            print(
-                f"[orchestrator][critic] column='{request.column_name}' diagnosis: {repair_diagnosis.root_cause}",
-                file=sys.stderr,
-            )
-            for repair in repair_diagnosis.exact_repairs[:3]:
-                actual = f", actual={repair.actual_output!r}" if repair.actual_output is not None else ""
-                expected = f", expected={repair.expected_output!r}" if repair.expected_output is not None else ""
-                print(
-                    f"[orchestrator][critic] column='{request.column_name}' repair-example: "
-                    f"input={repair.input_value!r}{actual}{expected} | {repair.fix_note}",
-                    file=sys.stderr,
-                )
+            progress.critic_diagnosis(request.column_name, repair_diagnosis)
             if not repair_diagnosis.should_retry:
                 failure_lines = "\n".join(f"- {format_validation_issue(issue)}" for issue in validation_issues[:10])
                 raise ValueError(

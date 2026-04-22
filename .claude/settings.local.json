@@ -13,7 +13,8 @@
       "WebSearch",
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(pip install *)",
-      "Bash(git mv *)"
+      "Bash(git mv *)",
+      "Bash(jupyter nbconvert *)"
     ]
   }
 }
