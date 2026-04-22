@@ -37,7 +37,6 @@ from validation import (
     run_completeness_analysis,
     run_cross_column_validation,
     run_duplicate_detection,
-    run_dtype_inference,
     run_format_consistency_validation,
     run_schema_validation,
 )
@@ -1050,18 +1049,17 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 # ---------------------------------------------------------------------------
 
 PIPELINE_STAGES = [
-    ("01", "Dtype", "dtype inference"),
-    ("02", "Schema", "naming & duplicates"),
-    ("03", "Completeness", "missing & placeholders"),
-    ("04", "Consistency", "format validation"),
-    ("05", "Anomaly", "outliers & rare values"),
-    ("06", "Cross-Column", "semantic checks"),
-    ("07", "Duplicates", "row-level detection"),
-    ("08", "Remediate", "action planning"),
-    ("09", "Generate", "cleaner synthesis"),
-    ("10", "Apply", "execution"),
-    ("11", "Verify", "post-clean audit"),
-    ("12", "Narrative", "report writing"),
+    ("01", "Schema", "dtype, naming & duplicates"),
+    ("02", "Completeness", "missing & placeholders"),
+    ("03", "Consistency", "format validation"),
+    ("04", "Anomaly", "outliers & rare values"),
+    ("05", "Cross-Column", "semantic checks"),
+    ("06", "Duplicates", "row-level detection"),
+    ("07", "Remediate", "action planning"),
+    ("08", "Generate", "cleaner synthesis"),
+    ("09", "Apply", "execution"),
+    ("10", "Verify", "post-clean audit"),
+    ("11", "Narrative", "report writing"),
 ]
 
 
@@ -1205,7 +1203,8 @@ def _stage_log_markup(entries: list[dict[str, object]]) -> str:
         if number:
             parts.append(f'<div class="run-log-number">{number}</div>')
         parts.append('<div class="run-log-title-group">')
-        parts.append(f'<div class="run-log-overline">Stage {number} of 12</div>' if number else '<div class="run-log-overline"></div>')
+        total = len(PIPELINE_STAGES)
+        parts.append(f'<div class="run-log-overline">Stage {number} of {total}</div>' if number else '<div class="run-log-overline"></div>')
         parts.append(f'<div class="run-log-headline">{title} &mdash; {caption}</div>')
         parts.append('</div>')
         parts.append(f'<div class="run-log-status">{status_labels.get(status, status.title())}</div>')
@@ -1329,22 +1328,16 @@ def run_full_pipeline(dataset_path: Path, strip_ph, prog_ph, log_container) -> N
             _render_stage_log()
             return False
 
-    # Stage 1: dtype inference
-    _mark_stage("Dtype", strip_ph, prog_ph)
-    with stage_banner("Dtype", "inferring pandas dtypes from sample values") as s:
-        handoff = run_dtype_inference(dataset_path)
-        s.write(f"Inferred dtypes for {len(handoff.columns)} columns.")
-    _complete_stage("Dtype", strip_ph, prog_ph)
-
-    # Stage 2: schema
+    # Stage 1: schema
     _mark_stage("Schema", strip_ph, prog_ph)
-    with stage_banner("Schema", "validating names & detecting duplicate columns") as s:
+    with stage_banner("Schema", "inferring dtypes, validating names & detecting duplicate columns") as s:
         schema = run_schema_validation(dataset_path)
         n_issues = len(schema.issues)
+        s.write(f"Inferred dtypes for {len(schema.columns)} columns.")
         s.write(f"{n_issues} schema issue{'s' if n_issues != 1 else ''} found.")
     _complete_stage("Schema", strip_ph, prog_ph)
 
-    # Stage 3: completeness
+    # Stage 2: completeness
     _mark_stage("Completeness", strip_ph, prog_ph)
     with stage_banner("Completeness", "detecting missing values & placeholder tokens") as s:
         completeness = run_completeness_analysis(dataset_path)
@@ -1352,7 +1345,7 @@ def run_full_pipeline(dataset_path: Path, strip_ph, prog_ph, log_container) -> N
         s.write(f"{n_cols} column{'s' if n_cols != 1 else ''} with missing or placeholder values.")
     _complete_stage("Completeness", strip_ph, prog_ph)
 
-    # Stage 4: consistency
+    # Stage 3: consistency
     _mark_stage("Consistency", strip_ph, prog_ph)
     with stage_banner("Consistency", "per-column format validation") as s:
         s.write(f"Parallel agent workers: {agent_workers}.")
@@ -1361,7 +1354,7 @@ def run_full_pipeline(dataset_path: Path, strip_ph, prog_ph, log_container) -> N
         s.write(f"{n_findings} format inconsistenc{'ies' if n_findings != 1 else 'y'} detected.")
     _complete_stage("Consistency", strip_ph, prog_ph)
 
-    # Stage 5: anomaly
+    # Stage 4: anomaly
     _mark_stage("Anomaly", strip_ph, prog_ph)
     with stage_banner("Anomaly", "numeric outliers & rare categories") as s:
         anomaly = run_anomaly_detection(dataset_path)
@@ -1369,7 +1362,7 @@ def run_full_pipeline(dataset_path: Path, strip_ph, prog_ph, log_container) -> N
         s.write(f"{n_anom} anomaly finding{'s' if n_anom != 1 else ''}.")
     _complete_stage("Anomaly", strip_ph, prog_ph)
 
-    # Stage 6: cross-column
+    # Stage 5: cross-column
     _mark_stage("Cross-Column", strip_ph, prog_ph)
     with stage_banner("Cross-Column", "semantic conflict detection") as s:
         cross_column = run_cross_column_validation(dataset_path)
@@ -1377,7 +1370,7 @@ def run_full_pipeline(dataset_path: Path, strip_ph, prog_ph, log_container) -> N
         s.write(f"{n_cc} cross-column finding{'s' if n_cc != 1 else ''}.")
     _complete_stage("Cross-Column", strip_ph, prog_ph)
 
-    # Stage 7: duplicate rows
+    # Stage 6: duplicate rows
     _mark_stage("Duplicates", strip_ph, prog_ph)
     with stage_banner("Duplicates", "row-level exact & near duplicate groups") as s:
         duplicates = run_duplicate_detection(dataset_path)
@@ -1394,7 +1387,7 @@ def run_full_pipeline(dataset_path: Path, strip_ph, prog_ph, log_container) -> N
     )
     st.session_state.validation_results = validation_results
 
-    # Stage 8: remediation planning
+    # Stage 7: remediation planning
     _mark_stage("Remediate", strip_ph, prog_ph)
     with stage_banner("Remediate", "mapping findings to concrete actions") as s:
         remediation_plan = _resolve_remediation_plan(
@@ -1408,7 +1401,7 @@ def run_full_pipeline(dataset_path: Path, strip_ph, prog_ph, log_container) -> N
         s.write(f"{n_actions} remediation action{'s' if n_actions != 1 else ''} planned.")
     _complete_stage("Remediate", strip_ph, prog_ph)
 
-    # Stage 9: cleaner generation
+    # Stage 8: cleaner generation
     _mark_stage("Generate", strip_ph, prog_ph)
     with stage_banner("Generate", "synthesizing per-column cleaning functions") as s:
         _build_cleaning_requests(dataset_path, validation_results)
@@ -1422,7 +1415,7 @@ def run_full_pipeline(dataset_path: Path, strip_ph, prog_ph, log_container) -> N
         s.write(f"{len(artifacts)} cleaner function{'s' if len(artifacts) != 1 else ''} generated.")
     _complete_stage("Generate", strip_ph, prog_ph)
 
-    # Stage 10: application
+    # Stage 9: application
     _mark_stage("Apply", strip_ph, prog_ph)
     with stage_banner("Apply", "executing cleaners, renames, casts") as s:
         cleaning_report, _exec_reports, remediation_plan = run_cleaner_application_with_plan(
@@ -1432,7 +1425,7 @@ def run_full_pipeline(dataset_path: Path, strip_ph, prog_ph, log_container) -> N
         s.write(f"{n_applied} action{'s' if n_applied != 1 else ''} applied to dataset.")
     _complete_stage("Apply", strip_ph, prog_ph)
 
-    # Stage 11: verification
+    # Stage 10: verification
     _mark_stage("Verify", strip_ph, prog_ph)
     with stage_banner("Verify", "re-checking consistency after cleaning") as s:
         verification_report = run_verify(dataset_path, on_event=s.write, max_workers=agent_workers)
@@ -1447,7 +1440,7 @@ def run_full_pipeline(dataset_path: Path, strip_ph, prog_ph, log_container) -> N
     save_final_report(dataset_path, final_report)
     st.session_state.final_report = final_report
 
-    # Stage 12: narrative
+    # Stage 11: narrative
     _mark_stage("Narrative", strip_ph, prog_ph)
     with stage_banner("Narrative", "agent writing the final quality report") as s:
         try:
@@ -1570,7 +1563,7 @@ def _dataset_preview_panel(path: Path) -> None:
 
 
 def view_pipeline() -> None:
-    _section("II", "The Pipeline", "twelve agents working in concert")
+    _section("II", "The Pipeline", "eleven stages working in concert")
 
     strip_ph = st.empty()
     strip_ph.markdown(
