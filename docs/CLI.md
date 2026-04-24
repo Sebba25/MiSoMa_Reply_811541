@@ -5,6 +5,10 @@ All commands run from the project root.
 Use `python main.py ...`.
 Default dataset: `Data/spesa.csv`
 
+
+python -m streamlit run app.py
+
+
 ## Quick Model
 
 The CLI is organized around two main entrypoints:

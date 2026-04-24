@@ -1283,6 +1283,7 @@ def run_full_pipeline(dataset_path: Path, strip_ph, prog_ph, log_container) -> N
     st.session_state.current_stage = None
     st.session_state.narrative_error = None
     agent_workers = _max_parallel_agent_workers(dataset_path)
+    cleaner_workers = 1
     _render_progress(0, None, strip_ph, prog_ph)
     stage_entries: list[dict[str, object]] = []
     log_ph = log_container.empty()
@@ -1404,12 +1405,13 @@ def run_full_pipeline(dataset_path: Path, strip_ph, prog_ph, log_container) -> N
     # Stage 8: cleaner generation
     _mark_stage("Generate", strip_ph, prog_ph)
     with stage_banner("Generate", "synthesizing per-column cleaning functions") as s:
+        s.write("Cleaner generation runs sequentially in the app.")
         _build_cleaning_requests(dataset_path, validation_results)
         artifacts = run_cleaner_generation(
             dataset_path,
             reuse_consistency=True,
             max_attempts=10,
-            max_workers=agent_workers,
+            max_workers=cleaner_workers,
             on_event=s.write,
         )
         s.write(f"{len(artifacts)} cleaner function{'s' if len(artifacts) != 1 else ''} generated.")
