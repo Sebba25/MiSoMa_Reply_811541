@@ -41,6 +41,44 @@ from tools import (
 )
 
 
+def _schema_pattern_is_ambiguous(pattern: str | None) -> bool:
+    if not pattern:
+        return False
+    normalized = pattern.strip().lower()
+    if not normalized:
+        return False
+    return any(
+        token in normalized
+        for token in (" / ", "/", " and ", " or ", "mixed ", "multiple ", "various ", "several ")
+    )
+
+
+def _infer_canonical_expected_pattern(format_facts) -> str:
+    if format_facts.pandas_dtype == "Float64":
+        return "decimal numeric string"
+    if format_facts.pandas_dtype == "Int64":
+        return "integer numeric string"
+    if format_facts.dominant_shape:
+        return f"shape '{format_facts.dominant_shape}'"
+    return "canonical dominant format"
+
+
+def _normalize_expected_pattern(expected_pattern: str, format_facts) -> str:
+    raw = (expected_pattern or "").strip()
+    fallback = _infer_canonical_expected_pattern(format_facts)
+    if not raw:
+        return fallback
+
+    lower = raw.lower()
+    if any(token in lower for token in ("mixed ", "multiple ", "various ", "several ")):
+        return fallback
+    if "e.g." in lower and "," in raw:
+        return fallback
+    if " and " in lower or " or " in lower:
+        return fallback
+    return raw
+
+
 def _build_suggested_strategy(
     expected_pattern: str,
     dominant_shape: str | None,
@@ -61,18 +99,20 @@ def _build_suggested_strategy(
             "Map to null when the value cannot be converted."
         )
 
-    lines = [
-        f"Target format: '{expected_pattern}'. "
-        f"Dominant valid shape: '{dominant_shape}' — values matching this shape are already valid, preserve them. "
-    ]
-
-    if dominant_example_values:
-        dominant_sample = ", ".join(repr(v) for v in dominant_example_values[:5])
-        lines.append(
-            f"Examples of already-valid values (the OUTPUT must look exactly like these): {dominant_sample}.\n"
-        )
+    lines = []
 
     if allow_variable_numeric_width:
+        lines.append(
+            f"Target format: '{expected_pattern}'. "
+            f"Observed dominant numeric shape: '{dominant_shape}'. "
+            "Treat dominant examples as illustrations of valid outputs, not as a structural validity rule.\n"
+        )
+        if dominant_example_values:
+            dominant_sample = ", ".join(repr(v) for v in dominant_example_values[:5])
+            lines.append(
+                f"Examples of valid outputs for this numeric target: {dominant_sample}. "
+                "Use expected_pattern to decide validity, not the exact width or shape of one example.\n"
+            )
         lines.append(
             "Handle every outlier shape group below by converting values into a valid numeric representation for the "
             "target pattern. Do not force every output to have the same string length as the examples above — values "
@@ -85,7 +125,20 @@ def _build_suggested_strategy(
                 "Pure numeric values that are outside the valid month range 1-12 (for example 0, 13, 99, or negative numbers) "
                 "are invalid and should map to null rather than being coerced to a different month.\n"
             )
+            lines.append(
+                "Do not collapse valid months 10, 11, or 12 to one-digit strings. "
+                "The target domain is the true month number as a string: 1-9 stay single-digit, while 10, 11, and 12 remain two-digit outputs.\n"
+            )
     else:
+        lines.append(
+            f"Target format: '{expected_pattern}'. "
+            f"Dominant valid shape: '{dominant_shape}' — values matching this shape are already valid, preserve them. "
+        )
+        if dominant_example_values:
+            dominant_sample = ", ".join(repr(v) for v in dominant_example_values[:5])
+            lines.append(
+                f"Examples of already-valid values (the OUTPUT must look exactly like these): {dominant_sample}.\n"
+            )
         lines.append(
             "Handle every outlier shape group below by inferring the transformation from the examples. "
             "For each group, verify your transformation produces output that matches the already-valid examples above — "
@@ -175,7 +228,11 @@ def run_column_format_check(
         )
 
     # Fast path: schema already identified the dominant pattern — no LLM needed.
-    if schema_entry is not None and schema_entry.detected_pattern:
+    if (
+        schema_entry is not None
+        and schema_entry.detected_pattern
+        and not _schema_pattern_is_ambiguous(schema_entry.detected_pattern)
+    ):
         inconsistent_rows = format_facts.inconsistent_rows
         inconsistent_example_profiles = format_facts.inconsistent_examples
         used_schema_override = False
@@ -265,6 +322,16 @@ def run_column_format_check(
             finding=None,
             summary=output.summary,
         )
+    if output.finding is not None:
+        normalized_pattern = _normalize_expected_pattern(output.finding.expected_pattern, format_facts)
+        if normalized_pattern != output.finding.expected_pattern:
+            output = output.model_copy(
+                update={
+                    "finding": output.finding.model_copy(
+                        update={"expected_pattern": normalized_pattern}
+                    )
+                }
+            )
     return output
 
 
@@ -296,7 +363,11 @@ async def run_column_format_check_async(
         )
 
     # Fast path: schema already identified the dominant pattern - no LLM needed.
-    if schema_entry is not None and schema_entry.detected_pattern:
+    if (
+        schema_entry is not None
+        and schema_entry.detected_pattern
+        and not _schema_pattern_is_ambiguous(schema_entry.detected_pattern)
+    ):
         inconsistent_rows = format_facts.inconsistent_rows
         inconsistent_example_profiles = format_facts.inconsistent_examples
         used_schema_override = False
@@ -385,6 +456,16 @@ async def run_column_format_check_async(
             finding=None,
             summary=output.summary,
         )
+    if output.finding is not None:
+        normalized_pattern = _normalize_expected_pattern(output.finding.expected_pattern, format_facts)
+        if normalized_pattern != output.finding.expected_pattern:
+            output = output.model_copy(
+                update={
+                    "finding": output.finding.model_copy(
+                        update={"expected_pattern": normalized_pattern}
+                    )
+                }
+            )
     return output
 
 

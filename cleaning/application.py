@@ -164,6 +164,45 @@ def _apply_dtype_casts(df: pd.DataFrame, path: Path) -> tuple[pd.DataFrame, dict
     return df, cast_results
 
 
+def _apply_string_lowercasing(df: pd.DataFrame, path: Path) -> tuple[pd.DataFrame, int, dict[str, int]]:
+    try:
+        handoff = load_schema_handoff(path)
+    except FileNotFoundError:
+        print("  schema cache not found - skipping string lowercasing.", file=sys.stderr)
+        return df, 0, {}
+
+    rename_map = {
+        column.name: column.rename_suggestion
+        for column in handoff.columns
+        if not column.naming_valid and column.rename_suggestion
+    }
+    string_columns = [
+        rename_map.get(column.name, column.name)
+        for column in handoff.columns
+        if column.pandas_dtype == "string"
+    ]
+
+    total_changed = 0
+    changed_by_column: dict[str, int] = {}
+    for column_name in string_columns:
+        if column_name not in df.columns:
+            continue
+
+        series = df[column_name]
+        lowered = series.str.lower()
+        changed_mask = series.notna() & lowered.notna() & series.ne(lowered)
+        changed_count = int(changed_mask.sum())
+        if changed_count <= 0:
+            continue
+
+        df[column_name] = lowered
+        total_changed += changed_count
+        changed_by_column[column_name] = changed_count
+        print(f"  '{column_name}': {changed_count} string values lowercased", file=sys.stderr)
+
+    return df, total_changed, changed_by_column
+
+
 def _load_artifact_program(artifact: GeneratedCleanerArtifact) -> ColumnCleanerProgram | None:
     code_path = Path(artifact.code_path)
     if not code_path.exists():
@@ -351,6 +390,15 @@ def run_cleaner_application_with_plan(
         status = cast_results.get(column_name, "not_needed")
         action.status = status if status in {"applied", "failed"} else "not_needed"
 
+    print("\n[apply] step 6 - lowercase string columns", file=sys.stderr)
+    _emit("step 6 — lowercasing string columns")
+    df, lowercased_total, lowercased_by_column = _apply_string_lowercasing(df, path)
+    if lowercased_total:
+        _emit(
+            f"  lowercased {lowercased_total} string value{'s' if lowercased_total != 1 else ''} "
+            f"across {len(lowercased_by_column)} column{'s' if len(lowercased_by_column) != 1 else ''}"
+        )
+
     output_dir = cleaning_cache_dir(path)
     output_dir.mkdir(parents=True, exist_ok=True)
     cleaned_path = cleaned_dataset_path(path)
@@ -372,7 +420,8 @@ def run_cleaner_application_with_plan(
         cleaned_csv_gzip_base64=gzip_text_to_base64(df.to_csv(index=False)),
         summary=(
             f"Applied {len(applied_artifacts)} format cleaners, replaced {total_replaced} placeholder values, "
-            f"renamed {len(rename_map)} columns, and cast dtypes. Cleaned dataset saved to `{cleaned_path.as_posix()}`."
+            f"renamed {len(rename_map)} columns, cast dtypes, and lowercased {lowercased_total} string values. "
+            f"Cleaned dataset saved to `{cleaned_path.as_posix()}`."
         ),
     )
     return cleaning_report, execution_reports, remediation_plan

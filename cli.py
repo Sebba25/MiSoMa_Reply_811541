@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Any, Callable
 
@@ -236,6 +237,10 @@ def print_result(result) -> None:
 
 
 def main() -> None:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
     load_dotenv()
     parser = build_parser()
     args = parser.parse_args()

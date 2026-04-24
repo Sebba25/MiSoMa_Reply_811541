@@ -335,6 +335,30 @@ def _build_cleaner_generation_prompt(
         attach_profile_text(request),
     ]
 
+    if request.target_dtype in {"Int64", "Float64"}:
+        prompt.append(
+            attach_text_document(
+                "Numeric target override:\n"
+                "- Do not build the already-valid guard from one dominant example or one dominant width.\n"
+                "- For numeric targets, decide validity from expected_pattern and numeric validity only.\n"
+                "- Dominant examples illustrate valid outputs, but they do not define the full acceptance rule.\n"
+                "- A numeric token that matches the width of a dominant example can still be invalid if it violates expected_pattern."
+            )
+        )
+
+    if request.expected_pattern.strip().lower() == "month number (1-12)":
+        prompt.append(
+            attach_text_document(
+                "Bounded month-number contract:\n"
+                "- The valid output domain is exactly the integers 1 through 12 rendered as strings.\n"
+                "- Do not infer validity from the width of one dominant example. A dominant sample like '7' does not mean every one-digit token is valid.\n"
+                "- Preserve the true month semantics: '10' -> '10', '11' -> '11', '12' -> '12'.\n"
+                "- Normalize zero-padded valid months by removing the leading zero: '01' -> '1', ..., '09' -> '9'.\n"
+                "- Reject out-of-range numeric months such as '0', negative numbers, and values above 12 by returning None.\n"
+                "- Month names and abbreviations must map to their true month numbers, not to the last digit of that number."
+            )
+        )
+
     if previous_program is not None and validation_issues:
         error_lines = "\n".join(f"- {format_validation_issue(issue)}" for issue in validation_issues[:20])
         concrete_examples = format_validation_examples(validation_issues, limit=8)
@@ -375,7 +399,8 @@ def _build_cleaner_generation_prompt(
                 [
                     (
                         "Use the attached critic diagnosis as the authoritative repair brief. "
-                        "Follow its planned_fix, patch_style, and exact_repairs while preserving already-correct logic."
+                        "Follow its bug_location, planned_fix, patch_style, and exact_repairs while preserving already-correct logic. "
+                        "Rewrite the named failing branch or guard first; do not leave the criticized fallback path in place."
                     ),
                     attach_profile_text(repair_diagnosis),
                 ]

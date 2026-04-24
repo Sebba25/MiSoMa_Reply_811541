@@ -989,6 +989,27 @@ details[data-testid="stStatus"] > div,
     padding: 0.5rem 0.8rem;
     border-bottom: 1px solid var(--rule);
 }
+.narrative code {
+    font-family: 'IBM Plex Mono', monospace !important;
+    font-size: 0.8rem !important;
+    color: var(--ink) !important;
+    background: var(--paper-deep) !important;
+    border: 1px solid var(--rule);
+    border-radius: 0.12rem;
+    padding: 0.03rem 0.18rem;
+}
+.narrative pre {
+    background: var(--paper-deep) !important;
+    border: 1px solid var(--rule);
+    padding: 0.9rem 1rem;
+    overflow-x: auto;
+}
+.narrative pre code {
+    background: transparent !important;
+    color: var(--ink) !important;
+    border: none;
+    padding: 0;
+}
 
 /* Dataset preview panel */
 .panel {

@@ -325,6 +325,22 @@ class NarrativeReportSection(BaseModel):
     )
 
 
+class NarrativeFrontMatter(BaseModel):
+    title: str = Field(description="Report title including the dataset name.")
+    executive_summary: str = Field(
+        description=(
+            "A comprehensive executive summary (8-12 sentences). Cover: dataset dimensions, "
+            "overall quality posture, key findings by category, total actions applied vs. proposed, "
+            "verification outcome, and residual risk assessment."
+        )
+    )
+    recommendations: list[str] = Field(
+        default_factory=list,
+        min_length=3,
+        description="Prioritized list of actionable next steps for the data steward. At least 3 items.",
+    )
+
+
 class NarrativeReport(BaseModel):
     title: str = Field(description="Report title including the dataset name.")
     executive_summary: str = Field(
@@ -384,7 +400,7 @@ class ColumnCleanerProgram(BaseModel):
         )
     )
     example_transformations: list[ExampleTransformation] = Field(default_factory=list)
-    verification_summary: str
+    verification_summary: str = ""
     residual_risks: list[str] = Field(default_factory=list)
 
 

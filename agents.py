@@ -19,11 +19,13 @@ from models import (
     DatasetDtypeInference,
     DuplicateSummaryOutput,
     NarrativeReport,
+    NarrativeReportSection,
+    NarrativeFrontMatter,
     SchemaSummaryOutput,
 )
+#MODEL = "openai-responses:gpt-4o-mini"
 
-MODEL = "openai-responses:gpt-4o-mini"
-
+MODEL = "openai-responses:gpt-5.4-mini"
 
 def setup_logfire() -> None:
     logfire.configure(
@@ -97,7 +99,7 @@ dtype_inference_agent = Agent(
         "- Below these thresholds: rely more on dominant pattern and semantic meaning.\n\n"
 
         "HARD DTYPE GATES:\n"
-        "- If numeric_parse_pct >= 80 and datetime_parse_pct < 20, default to Int64 or Float64 unless the clean values clearly contain letters or genuinely textual content.\n"
+        "- If numeric_parse_pct >= 80 and datetime_parse_pct < 20, you MUST choose Int64 or Float64. Do not choose string, boolean, or object in that case.\n"
         "- If datetime_parse_pct >= 60, default to datetime64[ns].\n"
         "- If numeric_parse_pct >= 80 and the dominant numeric values are whole numbers, choose Int64.\n"
         "- If numeric_parse_pct >= 80 and the dominant numeric values contain decimals, choose Float64.\n"
@@ -139,6 +141,7 @@ dtype_inference_agent = Agent(
 
         "PATTERN RULE:\n"
         "- detected_pattern must describe the dominant clean VALUE FORMAT, not a generic statistical interpretation.\n"
+        "- detected_pattern must name exactly ONE canonical target format. Never output unions such as 'month label / month number', 'A or B', or 'mixed ...'.\n"
         "- Prefer specific structural patterns over vague labels.\n"
         "- For bounded calendar-like numeric codes, use patterns such as 'month number (1-12)', '4-digit year', or 'YYYYMM'.\n"
         "- Use 'integer count' only for true count variables such as totals, volumes, or frequencies.\n"
@@ -206,7 +209,9 @@ format_consistency_agent = Agent(
         "- Only report a finding when there is a clear dominant format and a measurable set of outliers that a cleaning function could fix.\n\n"
 
         "WHEN YOU REPORT A FINDING:\n"
-        "- expected_pattern: describe the dominant format concisely (e.g. 'YYYYMM 6-digit integer string', 'ISO timestamp YYYY-MM-DDTHH:MM:SS.ffffff', 'two-digit zero-padded month 01-12').\n"
+        "- expected_pattern: describe ONE canonical dominant target format only (e.g. 'YYYYMM', 'YYYY-MM', 'ISO timestamp YYYY-MM-DDTHH:MM:SS.ffffff', 'two-digit zero-padded month 01-12').\n"
+        "- expected_pattern must never describe multiple acceptable formats. Do not use words like 'mixed', 'various', 'multiple', 'and', or 'or'.\n"
+        "- Choose the single dominant already-valid pattern shown by dominant_example_values; outlier formats belong in suggested_strategy, not in expected_pattern.\n"
         "- Copy ALL values from inconsistent_examples verbatim into example_inconsistent_values — do not filter, deduplicate, or summarize. The cleaner needs the full set.\n"
         "- evidence: cite dominant_shape, dominant_shape_pct, inconsistent_rows, and the target dtype from the prompt context.\n"
         "- suggested_strategy: this is the most important field — the downstream cleaner reads it as its normalization contract. "
@@ -311,7 +316,9 @@ column_cleaner_generator_agent = Agent(
         "- Return None only for missing/empty input or truly unrecoverable values.\n"
         "- Return the value unchanged if it already matches expected_pattern.\n"
         "- Every dominant_example_value is already valid. If your function changes even one dominant example, the function is invalid.\n"
-        "- Treat dominant_example_values as evidence of the valid target format, not as an exact allowlist. Prefer generic pass-through logic for already-valid values instead of checking membership in the exact examples.\n"
+        "- Treat dominant_example_values as evidence of the valid target format, not as an exact allowlist. "
+        "For datetime values and fixed-structure string formats, prefer generic pass-through logic for already-valid values instead of checking membership in the exact examples. "
+        "For Int64/Float64 targets, do NOT define validity from the width or shape of one dominant example; use expected_pattern and numeric validity instead.\n"
         "- Every value in example_inconsistent_values must be transformed or explicitly nulled — never returned as-is.\n"
         "- suggested_strategy is the authoritative contract — implement a handler for every shape group it lists, no exceptions.\n"
         "- Prefer recovery over None: strip prefixes, expand abbreviations, extract embedded numbers. "
@@ -322,19 +329,29 @@ column_cleaner_generator_agent = Agent(
         "- datetime64[ns]: string matching the EXACT strftime format seen in dominant_example_values.\n"
         "- Int64 / Float64: numeric string only — no units, no symbols. Use zfill/format for zero-padded outputs.\n"
         "- string: clean text matching expected_pattern.\n"
-        "Always verify your output structure matches dominant_example_values before returning.\n"
+        "Always verify your output against the true target contract before returning.\n"
+        "For datetime values and fixed-structure string formats, match the canonical structure shown by dominant_example_values. "
+        "For bounded numeric code patterns such as 'month number (1-12)', '4-digit year', or 'YYYYMM', follow the semantic rule in expected_pattern rather than copying the width of one dominant example.\n"
         "For datetime values, do not use brittle length-only guards such as len(s) == N to detect already-valid timestamps. "
         "Use separator structure, parsing, or exact re-rendering against the dominant examples.\n\n"
 
         "MANDATORY CANONICAL-VALUE EARLY-EXIT GUARD:\n"
-        "The FIRST logical step after handling None/empty input MUST be a canonical-pattern early-exit that returns "
-        "the value unchanged when it already matches the structural layout of any dominant_example_value. "
-        "Build the guard by deriving a regex from one dominant example: keep literal separators, replace each digit run with "
+        "The FIRST logical step after handling None/empty input MUST be an already-valid guard. "
+        "For datetime columns and fixed-structure string formats, this should be a canonical-pattern early-exit that returns "
+        "the value unchanged when it already matches the structural layout of a dominant_example_value. "
+        "Build that guard by deriving a regex from one dominant example: keep literal separators, replace each digit run with "
         "\\d{N} where N is that run's length. If s.fullmatch(pattern) returns true, return s immediately — do not enter any "
         "delimiter-based branch after that point. "
-        "This guard is NON-NEGOTIABLE for datetime columns where the dominant format contains delimiters that also appear in "
+        "For Int64/Float64 targets, do NOT build the already-valid guard from one dominant example or one dominant width. "
+        "Use expected_pattern and numeric validity to decide whether a value is already valid. "
+        "This guard discipline is NON-NEGOTIABLE for datetime columns where the dominant format contains delimiters that also appear in "
         "outlier formats (for example ISO '2024-03-11T02:01:04.421' vs Italian '11/03/2024' vs '11-03-2024'). Without the "
         "early-exit, a subsequent `if '-' in s:` branch will rewrite already-valid ISO values into gibberish.\n\n"
+        "NUMERIC TARGET OVERRIDE:\n"
+        "For Int64/Float64 targets, this already-valid rule does NOT mean 'same width as one dominant example = valid'. "
+        "Never infer numeric validity from a single sample like '7'. "
+        "Instead, implement the numeric rule from expected_pattern directly. "
+        "Example: for 'month number (1-12)', accept only integers 1 through 12; preserve 10, 11, and 12 as two-digit outputs when they are the true month values; reject 0 and all out-of-range integers.\n\n"
 
         "MUTUALLY EXCLUSIVE BRANCHES:\n"
         "Delimiter-based branches must be mutually exclusive and ordered most-specific first. "
@@ -480,10 +497,14 @@ cleaner_repair_critic_agent = Agent(
         "- primary_category: choose the most important validation category to fix first.\n"
         "- For non_self_contained_function, root_cause and bug_location should explicitly mention the undefined name or outer-scope dependency and tell the generator to inline or redefine that data inside the function.\n"
         "- root_cause: one concise diagnosis grounded in the issues and anchored in at least one concrete failing input/output pair when possible.\n"
-        "- bug_location: describe the failing logical area, such as 'already-valid timestamp guard' or 'currency stripping branch'.\n"
-        "- planned_fix: concrete and operational, suitable for the next generator prompt; mention the exact transformation direction that should change when the issue is localized.\n"
+        "- bug_location: describe the failing logical area as specifically as possible. Name the exact guard, branch, fallback path, or branch ordering mistake responsible, such as "
+        "'digit-only early-exit regex derived from a dominant example', 'generic numeric passthrough branch after month parsing', "
+        "'currency stripping branch', or 'already-valid timestamp guard before delimiter rewrite'. Do not use vague labels like 'format logic'.\n"
+        "- planned_fix: concrete and operational, suitable for the next generator prompt; mention the exact transformation direction that should change when the issue is localized. "
+        "When possible, prescribe the exact condition or branch rewrite needed, for example 'replace the one-digit structural early-exit with a semantic range check 1..12' or "
+        "'remove the raw numeric passthrough fallback after month normalization'.\n"
         "- priority_issues: list 1-3 short issue summaries, most important first.\n"
-        "- exact_repairs: provide 1-3 concrete repair examples. Each one should name the failing input, the wrong output if known, the correct output if it can be inferred, and a short note describing exactly what to change.\n"
+        "- exact_repairs: provide 1-3 concrete repair examples. Each one should name the failing input, the wrong output if known, the correct output if it can be inferred, and a short note describing exactly what to change in the named bug_location.\n"
         "- When the correct output is inferable from the dominant examples or expected pattern, fill expected_output explicitly instead of leaving it null.\n"
         "- confidence: high only when the failing pattern is clear and the fix is localized.\n\n"
 
@@ -626,5 +647,47 @@ narrative_report_agent = Agent(
         "- recommendations must contain at least 5 actionable, prioritized items in English.\n\n"
 
         "OUTPUT: valid JSON matching NarrativeReport exactly. No raw markdown outside the JSON fields."
+    ),
+)
+
+
+narrative_frontmatter_agent = Agent(
+    MODEL,
+    name="narrative-frontmatter",
+    output_type=PromptedOutput(NarrativeFrontMatter),
+    retries=4,
+    model_settings={"temperature": 0.2},
+    instructions=(
+        "You write the front matter for the final quality report. "
+        "Use only the attached briefing. Return valid JSON matching NarrativeFrontMatter exactly.\n\n"
+        "RULES:\n"
+        "- title must include the dataset name.\n"
+        "- executive_summary must be 8-12 sentences in professional English.\n"
+        "- recommendations must contain at least 3 concrete, prioritized actions in English.\n"
+        "- Do not use backticks for ordinary labels, column names, percentages, or example values.\n"
+        "- Do not invent facts not present in the briefing.\n"
+        "- No markdown outside the JSON fields."
+    ),
+)
+
+
+narrative_section_agent = Agent(
+    MODEL,
+    name="narrative-section",
+    output_type=PromptedOutput(NarrativeReportSection),
+    retries=4,
+    model_settings={"temperature": 0.2},
+    instructions=(
+        "You write exactly one section body for the final dataset quality report. "
+        "Use only the attached section briefing. Return valid JSON matching NarrativeReportSection exactly.\n\n"
+        "RULES:\n"
+        "- heading must exactly match the requested section heading.\n"
+        "- body must be markdown-formatted prose in professional English.\n"
+        "- body must be at least 150 words and grounded in the provided facts only.\n"
+        "- Use tables or bullet lists when they help clarity, but keep everything inside the body field.\n"
+        "- Do not use backticks for ordinary column names, labels, values, row counts, or percentages.\n"
+        "- Round percentages to one decimal place unless the briefing explicitly requires a different precision.\n"
+        "- Do not invent facts, counts, examples, or file paths.\n"
+        "- No markdown outside the JSON fields."
     ),
 )
