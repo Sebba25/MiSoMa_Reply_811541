@@ -22,3 +22,8 @@ ipykernel>=6.29
 
 # Streamlit UI (app.py)
 streamlit>=1.30
+
+# Pipeline diagram rendering in the notebook
+graphviz>=0.20
+plotly>=5.20
+
