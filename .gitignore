@@ -1,7 +1,0 @@
-__pycache__/
-*.py[cod]
-
-.env
-.logfire/
-**/.validation_cache/
-**/.cleaning_cache/
