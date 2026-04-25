@@ -39,6 +39,9 @@ load_dotenv()
 # Define the model to use for all agents
 MODEL = "openai-responses:gpt-5.4-mini"
 #MODEL = "openai-responses:gpt-4o-mini"
+#MODEL = "openai-responses:gpt-5.4-mini"
+
+MODEL = "openai-responses:gpt-5.4-nano"
 
 
 def setup_logfire() -> None:
