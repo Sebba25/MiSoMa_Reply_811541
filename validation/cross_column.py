@@ -1,9 +1,9 @@
-"""Cross-column validation stage.
+"""cross_column.py (validation pipeline): cross-column consistency checks.
 
-Heuristic detectors find duplicate-like columns, duplicate-semantic
-conflicts, year/month/period mismatches, and date-order violations. The
-``cross_column_summary_agent`` only writes the summary over the already-
-built report — it does not add or alter findings.
+This module exposes one public function, run_cross_column_validation, which runs four
+heuristic detectors to find duplicate-like columns, duplicate-semantic conflicts,
+year/month/period mismatches, and date-order violations. All findings are built locally
+without LLM involvement; the agent only writes the human-readable summary at the end.
 """
 
 from __future__ import annotations
@@ -26,10 +26,16 @@ from validation._summary import summarize_validation_report
 
 
 def run_cross_column_validation(path: Path, reuse_cache: bool = False) -> CrossColumnValidationReport:
+    """Run all cross-column heuristic checks and return a report with an agent-written summary.
+
+    Schema information is loaded if available to guide duplicate-semantic conflict detection;
+    the pipeline continues with empty schema context if the schema stage has not run yet.
+    """
     if reuse_cache:
         return load_cross_column(path)
 
     df = load_dataset_frame(path)
+    # Load schema to provide dtype and duplicate-group context to the detectors
     try:
         handoff = load_schema_handoff(path)
         schema_columns = handoff.columns
@@ -38,6 +44,7 @@ def run_cross_column_validation(path: Path, reuse_cache: bool = False) -> CrossC
         schema_columns = []
         duplicate_groups = []
 
+    # Run all four detectors and merge their findings into a single list
     findings = [
         CrossColumnFinding(**finding)
         for finding in (
@@ -47,6 +54,7 @@ def run_cross_column_validation(path: Path, reuse_cache: bool = False) -> CrossC
             + detect_date_order_violations(df, schema_columns)
         )
     ]
+    # Sort by volume descending so the most impactful findings appear first
     findings.sort(key=lambda finding: (-finding.affected_rows, ",".join(finding.columns), finding.check_type))
     fallback_summary = (
         f"Detected {len(findings)} cross-column consistency findings."
@@ -59,6 +67,7 @@ def run_cross_column_validation(path: Path, reuse_cache: bool = False) -> CrossC
         findings=findings,
         summary=fallback_summary,
     )
+    # Ask the summary agent to write a human-readable narrative over the already-built findings
     print(f"[orchestrator][cross-column][summary] dataset='{path.stem}'", file=sys.stderr, flush=True)
     report = report.model_copy(
         update={

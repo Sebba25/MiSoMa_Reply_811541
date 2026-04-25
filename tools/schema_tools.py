@@ -125,46 +125,35 @@ def build_dtype_inference_text(df, n_rows: int = 100) -> str:
     lines: list[str] = []
     for column_name in df.columns:
         series = df[column_name]
-        samples = (
-            series
-            .dropna()
-            .astype(str)
-            .str.strip()
-            .loc[lambda s: s != ""]
-            .drop_duplicates()
-            .head(n_rows)
-            .tolist()
-        )
+        # Drop nulls, convert to string, strip whitespace, filter out empty strings, and get unique values for the sample
+        samples = series.dropna().astype(str).str.strip().loc[lambda s: s != ""].drop_duplicates()
+        # Limit to n_rows samples for brevity in the prompt; convert to list for easier joining
+        samples = samples.head(n_rows).tolist()
+        # Format samples as a comma-separated list of quoted strings, or indicate if there are no valid samples
         samples_text = ", ".join(f'"{v}"' for v in samples) if samples else "(no samples)"
+        # Compute parse percentages over the entire column to provide global context to the LLM
         num_pct = compute_numeric_parse_pct(series)
         dt_pct = compute_datetime_parse_pct(series)
-        lines.append(
-            f"{column_name}: {samples_text} "
-            f"[numeric_parse_pct={num_pct:.1f}%, datetime_parse_pct={dt_pct:.1f}%]"
-        )
+        # Build the line for this column with its name, sample values, and parse percentages
+        lines.append(f"{column_name}: {samples_text} " f"[numeric_parse_pct={num_pct:.1f}%, datetime_parse_pct={dt_pct:.1f}%]")
     return "\n".join(lines)
 
 def build_dataset_profile(df, dataset_name: str, dtype_overrides: dict[str, str] | None = None) -> DatasetProfile:
     """Build a DatasetProfile from a raw DataFrame.
     If dtype_overrides is provided (from the LLM dtype inference agent),
     those values replace the raw pandas dtype for the relevant columns."""
-    return DatasetProfile(
-        dataset_name=dataset_name,
-        total_rows=len(df),
-        total_columns=len(df.columns),
-        columns_profiles=[
-            ColumnProfile(
+    return DatasetProfile(dataset_name=dataset_name, total_rows=len(df), total_columns=len(df.columns),
+        # For each column, compute the profile statistics and apply dtype overrides if available. 
+        # The profile includes the agent-inferred dtype, which downstream agents can use for more informed analysis and recommendations.
+        columns_profiles=[ColumnProfile(
                 column_name=column_name,
-                pandas_dtype=(dtype_overrides or {}).get(column_name, str(df[column_name].dtype)),
-                non_null_rows=int(df[column_name].notna().sum()),
-                distinct_non_null_values=int(df[column_name].nunique(dropna=True)),
-                numeric_parse_pct=compute_numeric_parse_pct(df[column_name]),
-                datetime_parse_pct=compute_datetime_parse_pct(df[column_name]),
-                empty_like_pct=compute_empty_like_pct(df[column_name]),
-                sample_values=sample_non_null_values(df[column_name]),
-            )
-            for column_name in df.columns
-        ],
-    )
+                pandas_dtype=(dtype_overrides or {}).get(column_name, str(df[column_name].dtype)), # Use the agent-inferred dtype if available, otherwise fall back to pandas dtype
+                non_null_rows=int(df[column_name].notna().sum()), # Count of non-null rows for this column
+                distinct_non_null_values=int(df[column_name].nunique(dropna=True)), # Count of distinct non-null values, giving a sense of cardinality
+                numeric_parse_pct=compute_numeric_parse_pct(df[column_name]), # Percentage of values that can be parsed as numeric, providing a signal for numeric type inference
+                datetime_parse_pct=compute_datetime_parse_pct(df[column_name]), # Percentage of values that can be parsed as datetime, providing a signal for datetime type inference
+                empty_like_pct=compute_empty_like_pct(df[column_name]), # Percentage of values that are empty or look empty which can be a signal for missingness or data quality issues
+                sample_values=sample_non_null_values(df[column_name]) # A small sample of non-null values for this column, which can be used in LLM prompts to provide concrete examples of the data in this column.
+                ) for column_name in df.columns]) # iterate over columns to build their profiles
 
 

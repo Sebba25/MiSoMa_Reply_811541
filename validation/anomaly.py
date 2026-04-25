@@ -1,10 +1,10 @@
-"""Anomaly detection stage.
+"""anomaly.py (validation pipeline): numeric outlier and rare-category detection.
 
-Heuristic detectors (numeric outliers + rare categoricals) build the
-findings locally; ``anomaly_summary_agent`` only writes the human-readable
-summary over the already-built report. Columns flagged as duplicate-semantic
-peers in the schema stage are suppressed for the non-preferred alias to
-avoid reporting the same anomaly twice.
+This module exposes one public function, run_anomaly_detection, which runs heuristic
+detectors locally to find numeric outliers and rare categorical values. Columns that were
+flagged as duplicate-semantic peers in the schema stage are suppressed for the non-preferred
+alias to avoid reporting the same anomaly twice. The agent only writes the human-readable
+summary over the already-built findings.
 """
 
 from __future__ import annotations
@@ -26,31 +26,46 @@ from validation._summary import summarize_validation_report
 
 
 def _duplicate_semantic_suppressed_columns(columns: list[SchemaColumnEntry], duplicate_groups) -> set[str]:
+    """Return the set of column names that should be suppressed in anomaly reporting.
+
+    For each group of duplicate-semantic columns, only the preferred alias is kept.
+    The preferred column is the one with a valid name and the smallest normalised form,
+    so anomalies are reported once rather than once per alias.
+    """
     by_name = {column.name: column for column in columns}
     suppressed: set[str] = set()
+
+    # Sort key: prefer columns with valid names, then those whose name is already normalised, then alphabetically
+    def _sort_key(name: str) -> tuple[int, int, str]:
+        column = by_name[name]
+        return (
+            0 if column.naming_valid else 1,
+            0 if normalized_schema_name(name) == name else 1,
+            name,
+        )
+
     for group in duplicate_groups:
+        # Only consider columns that are actually present in the loaded dataset
         present = [name for name in group.columns if name in by_name]
         if len(present) < 2:
             continue
-
-        def _sort_key(name: str) -> tuple[int, int, str]:
-            column = by_name[name]
-            return (
-                0 if column.naming_valid else 1,
-                0 if normalized_schema_name(name) == name else 1,
-                name,
-            )
-
+        # The first column after sorting is the preferred one; all others are suppressed
         preferred = sorted(present, key=_sort_key)[0]
         suppressed.update(name for name in present if name != preferred)
     return suppressed
 
 
 def run_anomaly_detection(path: Path, reuse_cache: bool = False) -> AnomalyDetectionReport:
+    """Run heuristic anomaly detection and return a structured report with an agent-written summary.
+
+    Findings are built entirely from local heuristics — the agent only narrates the result.
+    Schema information is loaded if available to suppress duplicate-semantic column aliases.
+    """
     if reuse_cache:
         return load_anomaly(path)
 
     df = load_dataset_frame(path)
+    # Load schema to inform suppression; fall back to empty if the schema stage has not run yet
     try:
         handoff = load_schema_handoff(path)
         schema_columns = handoff.columns
@@ -59,6 +74,7 @@ def run_anomaly_detection(path: Path, reuse_cache: bool = False) -> AnomalyDetec
         schema_columns = []
         suppressed_columns = set()
 
+    # Run both detectors and filter out suppressed duplicate-semantic aliases
     findings = [
         AnomalyFinding(**finding)
         for finding in (
@@ -67,6 +83,7 @@ def run_anomaly_detection(path: Path, reuse_cache: bool = False) -> AnomalyDetec
         )
         if finding["column_name"] not in suppressed_columns
     ]
+    # Sort by volume descending so the most impactful findings appear first
     findings.sort(key=lambda finding: (-finding.affected_rows, finding.column_name, finding.anomaly_type))
     fallback_summary = (
         f"Detected {len(findings)} anomaly findings across numeric outliers and rare categorical values."
@@ -80,6 +97,7 @@ def run_anomaly_detection(path: Path, reuse_cache: bool = False) -> AnomalyDetec
         findings=findings,
         summary=fallback_summary,
     )
+    # Ask the summary agent to write a human-readable narrative over the already-built findings
     print(f"[orchestrator][anomaly][summary] dataset='{path.stem}'", file=sys.stderr, flush=True)
     report = report.model_copy(
         update={

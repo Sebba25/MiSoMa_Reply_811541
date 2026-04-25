@@ -1,13 +1,11 @@
-"""Per-column format-consistency stage.
+"""consistency.py (validation pipeline): per-column format consistency checks.
 
-Has both a fast path (schema-guided, no LLM call — packages the profiler's
-outlier count/examples into a ``FormatConsistencyFinding`` directly) and a
-slow path where ``format_consistency_agent`` infers the dominant shape
-from the attached ``ColumnFormatFacts`` when no schema pattern is available.
-
-``_build_suggested_strategy`` is the cleaner-agent strategy string: it
-enumerates every outlier shape with concrete examples so the downstream
-generator handles each group explicitly.
+This module exposes two public functions. run_column_format_check checks a single column
+and run_format_consistency_validation runs all columns, optionally in parallel. Each column
+check follows a fast path when the schema already provides an unambiguous pattern (no LLM
+call needed) and a slow path where the format_consistency_agent infers the dominant shape.
+The suggested_strategy string built here is later consumed by the cleaner generator as its
+normalization contract.
 """
 
 from __future__ import annotations
@@ -42,38 +40,46 @@ from tools import (
 
 
 def _schema_pattern_is_ambiguous(pattern: str | None) -> bool:
+    """Return True if the pattern string contains tokens that suggest it describes multiple formats."""
     if not pattern:
         return False
+    # Normalise for case-insensitive token matching
     normalized = pattern.strip().lower()
     if not normalized:
         return False
-    return any(
-        token in normalized
-        for token in (" / ", "/", " and ", " or ", "mixed ", "multiple ", "various ", "several ")
-    )
+    # Any of these tokens indicates the agent returned a union or vague description rather than one format
+    ambiguous_tokens = {" / ", "/", " and ", " or ", "mixed ", "multiple ", "various ", "several "}
+    return any(token in normalized for token in ambiguous_tokens)
 
 
 def _infer_canonical_expected_pattern(format_facts) -> str:
+    """Derive a safe fallback expected pattern from the column's dtype and dominant shape."""
+    # Numeric dtypes have a fixed canonical pattern regardless of how values are formatted
     if format_facts.pandas_dtype == "Float64":
         return "decimal numeric string"
     if format_facts.pandas_dtype == "Int64":
         return "integer numeric string"
+    # For string columns, use the profiler's dominant shape as the pattern if available
     if format_facts.dominant_shape:
         return f"shape '{format_facts.dominant_shape}'"
     return "canonical dominant format"
 
 
 def _normalize_expected_pattern(expected_pattern: str, format_facts) -> str:
+    """Clean up the agent's expected_pattern, replacing vague or multi-valued patterns with a safe fallback."""
     raw = (expected_pattern or "").strip()
     fallback = _infer_canonical_expected_pattern(format_facts)
     if not raw:
         return fallback
 
     lower = raw.lower()
+    # Patterns containing these tokens describe multiple formats, not one canonical target
     if any(token in lower for token in ("mixed ", "multiple ", "various ", "several ")):
         return fallback
+    # Patterns that embed examples inline (e.g. "YYYYMM, e.g. 202301") are not clean pattern strings
     if "e.g." in lower and "," in raw:
         return fallback
+    # Conjunctions indicate the agent hedged instead of picking one format
     if " and " in lower or " or " in lower:
         return fallback
     return raw
@@ -86,8 +92,13 @@ def _build_suggested_strategy(
     dominant_example_values: list[str] | None = None,
     allow_variable_numeric_width: bool = False,
 ) -> str:
-    """Build a cleaner-agent strategy string that enumerates each outlier shape
-    group with representative examples, so the agent handles every case explicitly."""
+    """Build the strategy string consumed by the cleaner generator as its normalisation contract.
+
+    Groups outlier values by shape and lists concrete examples for each group so the generator
+    knows exactly what transformations to implement. The allow_variable_numeric_width flag
+    relaxes the output-width requirement for numeric columns where the valid range varies.
+    """
+    # Group inconsistent examples by shape, excluding values that already match the dominant shape
     groups: dict[str, list[str]] = defaultdict(list)
     for ex in inconsistent_examples:
         if ex.shape != dominant_shape:
@@ -165,13 +176,21 @@ def _profile_schema_guided_inconsistencies(
     column_name: str,
     schema_entry: SchemaColumnEntry,
 ) -> tuple[int, list[FormatOutlierExample]] | None:
+    """Return the count and examples of values that fail the schema's numeric pattern, or None if not applicable.
+
+    Only runs for numeric dtype columns where the schema provides a concrete pattern to validate against.
+    Returns None when the column is not numeric, signalling the caller to fall back to shape-based profiling.
+    """
+    # Schema-guided profiling only applies to numeric columns
     if schema_entry.pandas_dtype not in {"Int64", "Float64"}:
         return None
 
+    # Drop nulls, cast to string, strip whitespace, and exclude known placeholder tokens
     rendered = df[column_name].dropna().astype(str).str.strip()
     rendered = rendered[rendered != ""]
     rendered = rendered[~rendered.str.lower().isin(PLACEHOLDER_TOKENS)]
 
+    # Collect values that do not match the expected numeric pattern
     invalid_values = [
         value
         for value in rendered
@@ -188,6 +207,7 @@ def _profile_schema_guided_inconsistencies(
     if not invalid_values:
         return 0, []
 
+    # Count occurrences and return the top 60 most frequent invalid values as outlier examples
     counts = Counter(invalid_values)
     examples = [
         FormatOutlierExample(
@@ -207,7 +227,12 @@ def run_column_format_check(
     context_label: str,
     schema_entry: SchemaColumnEntry | None = None,
 ) -> ColumnConsistencyReport:
-    # Skip columns that are never machine-format candidates by role
+    """Check a single column for format inconsistencies, using the schema pattern when available.
+
+    Takes the fast path (no LLM) when the schema provides an unambiguous pattern, otherwise
+    falls back to the format_consistency_agent to infer the dominant shape.
+    """
+    # Skip columns whose role indicates free-form content where format variation is expected
     if schema_entry is not None and schema_entry.string_role in ("name", "free_text"):
         return ColumnConsistencyReport(
             finding=None,
@@ -290,7 +315,8 @@ def run_column_format_check(
             ),
         )
 
-    # Slow path: no schema pattern available — let the agent infer it.
+    # Slow path: no schema pattern available — let the agent infer the dominant format
+    # Include dtype and role in the prompt as hints when the schema entry exists
     schema_context = ""
     if schema_entry is not None:
         schema_context = (
@@ -317,20 +343,15 @@ def run_column_format_check(
     )
     result = run_agent_with_backoff(format_consistency_agent, prompt)
     output = result.output
+    # Discard findings where the agent reported zero inconsistent rows
     if output.finding is not None and output.finding.inconsistent_rows <= 0:
-        return ColumnConsistencyReport(
-            finding=None,
-            summary=output.summary,
-        )
+        return ColumnConsistencyReport(finding=None, summary=output.summary)
+    # Normalise the expected_pattern if the agent returned a vague or multi-valued description
     if output.finding is not None:
         normalized_pattern = _normalize_expected_pattern(output.finding.expected_pattern, format_facts)
         if normalized_pattern != output.finding.expected_pattern:
             output = output.model_copy(
-                update={
-                    "finding": output.finding.model_copy(
-                        update={"expected_pattern": normalized_pattern}
-                    )
-                }
+                update={"finding": output.finding.model_copy(update={"expected_pattern": normalized_pattern})}
             )
     return output
 
@@ -342,7 +363,8 @@ async def run_column_format_check_async(
     context_label: str,
     schema_entry: SchemaColumnEntry | None = None,
 ) -> ColumnConsistencyReport:
-    # Skip columns that are never machine-format candidates by role
+    """Async version of run_column_format_check, used when columns are checked in parallel."""
+    # Skip columns whose role indicates free-form content where format variation is expected
     if schema_entry is not None and schema_entry.string_role in ("name", "free_text"):
         return ColumnConsistencyReport(
             finding=None,
@@ -425,6 +447,7 @@ async def run_column_format_check_async(
             ),
         )
 
+    # Include dtype and role in the prompt as hints when the schema entry exists
     schema_context = ""
     if schema_entry is not None:
         schema_context = (
@@ -451,20 +474,15 @@ async def run_column_format_check_async(
     )
     result = await run_agent_with_backoff_async(format_consistency_agent, prompt)
     output = result.output
+    # Discard findings where the agent reported zero inconsistent rows
     if output.finding is not None and output.finding.inconsistent_rows <= 0:
-        return ColumnConsistencyReport(
-            finding=None,
-            summary=output.summary,
-        )
+        return ColumnConsistencyReport(finding=None, summary=output.summary)
+    # Normalise the expected_pattern if the agent returned a vague or multi-valued description
     if output.finding is not None:
         normalized_pattern = _normalize_expected_pattern(output.finding.expected_pattern, format_facts)
         if normalized_pattern != output.finding.expected_pattern:
             output = output.model_copy(
-                update={
-                    "finding": output.finding.model_copy(
-                        update={"expected_pattern": normalized_pattern}
-                    )
-                }
+                update={"finding": output.finding.model_copy(update={"expected_pattern": normalized_pattern})}
             )
     return output
 
@@ -476,6 +494,7 @@ async def _run_column_format_checks_async(
     schema_map: dict[str, SchemaColumnEntry],
     max_workers: int,
 ) -> list[ColumnConsistencyReport]:
+    """Run format checks for all columns concurrently, bounded by the semaphore to limit parallelism."""
     semaphore = asyncio.Semaphore(max_workers)
 
     async def _run_one(index: int, column_name: str) -> tuple[int, ColumnConsistencyReport]:
@@ -487,13 +506,16 @@ async def _run_column_format_checks_async(
                 "original validation",
                 schema_entry=schema_map.get(column_name),
             )
+            # Return the index alongside the report so results can be reordered after completion
             return index, report
 
     tasks = [asyncio.create_task(_run_one(index, column_name)) for index, column_name in enumerate(column_names)]
     reports_by_index: dict[int, ColumnConsistencyReport] = {}
+    # Collect results as they complete rather than in submission order
     for task in asyncio.as_completed(tasks):
         index, report = await task
         reports_by_index[index] = report
+    # Restore the original column order before returning
     return [reports_by_index[index] for index in range(len(column_names))]
 
 
@@ -503,6 +525,11 @@ def run_format_consistency_validation(
     read_as_str: bool = False,
     max_workers: int = 1,
 ) -> ConsistencyValidationReport:
+    """Run format consistency checks for all columns and return the combined report.
+
+    When max_workers > 1, columns are checked concurrently using async tasks. Schema context
+    is loaded if available to enable the fast path for columns with known patterns.
+    """
     if max_workers < 1:
         raise ValueError("max_workers must be at least 1.")
     if reuse_cache:
@@ -510,6 +537,7 @@ def run_format_consistency_validation(
     df = load_dataset_frame(path, dtype=str if read_as_str else None)
     format_findings: list[FormatConsistencyFinding] = []
 
+    # Load schema to provide pattern and dtype context to each column check
     schema_map: dict[str, SchemaColumnEntry] = {}
     try:
         handoff = load_schema_handoff(path)
@@ -518,6 +546,7 @@ def run_format_consistency_validation(
         pass
 
     column_names = list(df.columns)
+    # Use the synchronous path for single-worker runs to keep the event loop simple
     if max_workers == 1 or len(column_names) <= 1:
         reports = []
         for column_name in column_names:
@@ -526,6 +555,7 @@ def run_format_consistency_validation(
                 run_column_format_check(df, column_name, path.stem, "original validation", schema_entry=schema_entry)
             )
     else:
+        # Cap the worker count so we never spawn more tasks than there are columns
         worker_count = min(max_workers, len(column_names))
         print(
             f"[orchestrator][consistency] running {len(column_names)} column checks with {worker_count} async workers",
@@ -536,6 +566,7 @@ def run_format_consistency_validation(
             _run_column_format_checks_async(df, column_names, path.stem, schema_map, worker_count)
         )
 
+    # Collect only the columns that actually have a finding
     for result in reports:
         if result.finding is not None:
             format_findings.append(result.finding)

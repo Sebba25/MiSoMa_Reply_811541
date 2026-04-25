@@ -1,3 +1,16 @@
+"""models.py: structured output contracts for every pipeline agent.
+
+Pydantic AI derives a JSON schema from each BaseModel defined here and injects it into the
+agent's prompt via PromptedOutput(...), so the LLM knows exactly what structure to return.
+The same models are then used as typed Python objects throughout the rest of the pipeline —
+they carry findings from one stage to the next and are serialised to the validation and
+cleaning caches.
+
+Field(description=...) annotations are part of the contract: those descriptions appear
+verbatim in the JSON schema the LLM sees, so they act as fine-grained instructions for
+each output field.
+"""
+
 from __future__ import annotations
 
 from typing import Any, Literal
