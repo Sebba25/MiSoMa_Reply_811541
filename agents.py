@@ -24,8 +24,10 @@ from models import (
     SchemaSummaryOutput,
 )
 #MODEL = "openai-responses:gpt-4o-mini"
+#MODEL = "openai-responses:gpt-5.4-mini"
 
-MODEL = "openai-responses:gpt-5.4-mini"
+MODEL = "openai-responses:gpt-5.4-nano"
+
 
 def setup_logfire() -> None:
     logfire.configure(
