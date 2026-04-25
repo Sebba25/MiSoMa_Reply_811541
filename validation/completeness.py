@@ -1,9 +1,9 @@
-"""Completeness analysis stage.
+"""completeness.py (validation pipeline): per-column completeness analysis.
 
-Single LLM call: ``completeness_analysis_agent`` reads the attached
-``CompletenessProfile`` document and returns a full
-``CompletenessAnalysisReport`` (missing-like %, placeholder tokens
-detected per column, sparse-column flags).
+This module exposes one public function, run_completeness_analysis, which builds a
+statistical completeness profile for the dataset and passes it to the agent. The agent
+identifies missing values, placeholder tokens, and sparse columns, returning a structured
+CompletenessAnalysisReport that is cached for downstream use.
 """
 
 from __future__ import annotations
@@ -23,15 +23,20 @@ from tools import (
 
 
 def run_completeness_analysis(path: Path, reuse_cache: bool = False) -> CompletenessAnalysisReport:
+    """Build a completeness profile for the dataset and return the agent's structured analysis.
+
+    The profile is computed locally from the raw data, then handed to the agent which
+    identifies missing values, placeholder tokens, and sparse columns. The result is cached.
+    """
     if reuse_cache:
         return load_completeness(path)
     df = load_dataset_frame(path)
+    # Build a per-column completeness profile to attach to the agent prompt
     profile = build_completeness_profile(df, path.stem)
     prompt = [
         (
             f"Analyze the attached completeness profile for dataset {path.stem}. "
             "Use Python in code execution to inspect the profile document. "
-            "This is step 2 of the orchestration only: Completeness Analysis. "
             "Use the provided metrics to summarize per-column completeness, detect missing-like and placeholder values, "
             "identify actual placeholder tokens present in the dataset, and flag sparse columns that may be candidates for removal or investigation."
         ),
