@@ -1,14 +1,23 @@
-from __future__ import annotations
+"""agents.py: all Pydantic AI Agent instances used by the pipeline.
 
+Each Agent bundles the model identifier, the output type (a model from models.py that
+defines the expected JSON structure), retry settings, temperature, and the system prompt
+via instructions=(...). Two agents also enable the CodeExecutionTool so the LLM can run
+and test its own output before returning it.
+
+All agents share the MODEL constant defined at the top of this file. Every agent call in
+the pipeline goes through run_agent_with_backoff() in tools/, which handles rate-limit
+retries transparently.
+"""
+
+from __future__ import annotations
 import os
 from pathlib import Path
-
 import logfire
 from dotenv import load_dotenv
-
-load_dotenv()
 from pydantic_ai import Agent, CodeExecutionTool, PromptedOutput
 
+# Import structured output schemas
 from models import (
     AnomalySummaryOutput,
     CleanerRepairDiagnosis,
@@ -23,9 +32,14 @@ from models import (
     NarrativeFrontMatter,
     SchemaSummaryOutput,
 )
+
+# Load environment variables
+load_dotenv()
+
+# Define the model to use for all agents
+MODEL = "openai-responses:gpt-5.4-mini"
 #MODEL = "openai-responses:gpt-4o-mini"
 
-MODEL = "openai-responses:gpt-5.4-mini"
 
 def setup_logfire() -> None:
     logfire.configure(
