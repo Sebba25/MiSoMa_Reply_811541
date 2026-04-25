@@ -13,7 +13,9 @@
       "WebSearch",
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(pip install *)",
-      "Bash(git mv *)"
+      "Bash(git mv *)",
+      "Bash(python3 -c ' *)",
+      "Bash(python3)"
     ]
   }
 }
