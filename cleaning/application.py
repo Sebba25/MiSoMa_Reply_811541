@@ -369,20 +369,14 @@ def run_cleaner_application_with_plan(
 
     # Load the remediation plan from cache if the caller did not provide one
     if remediation_plan is None:
-        try:
-            remediation_plan = load_remediation_plan(path)
-        except FileNotFoundError:
-            remediation_plan = None
+        remediation_plan = load_remediation_plan(path)
     # Clone the plan so action statuses can be updated without mutating a shared object
     remediation_plan = _clone_remediation_plan(remediation_plan)
     #Get the plan’s action list, or use an empty list if there is no plan
     actions = remediation_plan.actions if remediation_plan is not None else []
 
     # Load the generated cleaner manifest if it exists
-    try:
-        artifacts = load_cleaner_manifest(path)
-    except FileNotFoundError:
-        artifacts = [] #otherwise use an empty list
+    artifacts = load_cleaner_manifest(path)
     # Load the raw dataset and record the initial shape for the final report
     df = load_dataset_frame(path)
     #the rows and columns before cleaning are recorded

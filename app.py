@@ -22,7 +22,7 @@ from cleaning.orchestrator import (
 from cleaning.paths import cleaned_dataset_path, final_report_path
 from cleaning.reporting import (
     build_final_report,
-    generate_narrative_report,
+    _generate_narrative_report_chunked,
     narrative_report_path,
     save_final_report,
     save_narrative_report,
@@ -1467,7 +1467,7 @@ def run_full_pipeline(dataset_path: Path, strip_ph, prog_ph, log_container) -> N
     _mark_stage("Narrative", strip_ph, prog_ph)
     with stage_banner("Narrative", "agent writing the final quality report") as s:
         try:
-            narrative = generate_narrative_report(final_report)
+            narrative = _generate_narrative_report_chunked(final_report)
             save_narrative_report(dataset_path, narrative)
             st.session_state.narrative_report = narrative
             st.session_state.narrative_error = None

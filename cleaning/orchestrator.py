@@ -28,7 +28,7 @@ from .application import run_cleaner_application_with_plan
 from .generation import run_cleaner_generation
 from .paths import cleaned_dataset_path, load_cleaner_manifest
 from .remediation import run_remediation_planning
-from .reporting import build_final_report, generate_narrative_report, save_final_report, save_narrative_report
+from .reporting import build_final_report, _generate_narrative_report_chunked, save_final_report, save_narrative_report
 from .request import build_column_cleaning_request
 from .verification import run_verify
 
@@ -199,7 +199,7 @@ def run_cleaning(
     )
     # Save the final JSON report and the human-readable narrative report
     save_final_report(path, final_report)
-    narrative = generate_narrative_report(final_report)
+    narrative = _generate_narrative_report_chunked(final_report)
     save_narrative_report(path, narrative)
 
     # Return a single result object containing the outputs of every major pipeline stage

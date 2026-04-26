@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 
 from agents import setup_logfire
 from cleaning import run_cleaner_application, run_cleaner_generation, run_cleaning, run_remediation_planning, run_verify
-from cleaning.reporting import generate_narrative_report, save_narrative_report
+from cleaning.reporting import _generate_narrative_report_chunked, save_narrative_report
 from validation import (
     build_validation_results,
     run_completeness_analysis,
@@ -164,7 +164,7 @@ def run_narrative_report(args: argparse.Namespace, dataset_path: Path):
     final_report = FinalPipelineReport.model_validate_json(
         report_path.read_text(encoding="utf-8")
     )
-    narrative = generate_narrative_report(final_report)
+    narrative = _generate_narrative_report_chunked(final_report)
     output_path = save_narrative_report(dataset_path, narrative)
     import sys as _sys
     _sys.stdout.buffer.write(output_path.read_bytes())
