@@ -27,8 +27,12 @@ from .paths import cleaned_dataset_path, cleaning_cache_dir, final_report_path
 
 
 def save_final_report(path: Path, report: FinalPipelineReport) -> Path:
+    '''Saves the final structured pipeline report as JSON and returns its output path.'''
+    # Compute the standard JSON output path for the final report.
     report_path = final_report_path(path)
+    # Ensure the parent directory exists before writing the file.
     report_path.parent.mkdir(parents=True, exist_ok=True)
+    # Serialize the Pydantic model as pretty-printed JSON text.
     report_path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
     return report_path
 
@@ -40,19 +44,24 @@ def _compute_cleaned_non_null_counts(dataset_path: Path | None) -> tuple[int, di
     instead of letting the agent guess from the cleaning summary string.
     Returns (0, {}) if the cleaned file cannot be loaded.
     """
+    # If no dataset path is available, there is no cleaned file to inspect.
     if dataset_path is None:
         return 0, {}
+    # Build the path of the cleaned CSV produced by the application stage.
     cleaned_path = cleaned_dataset_path(dataset_path)
     if not cleaned_path.exists():
         return 0, {}
     try:
+        # Import lazily because this helper is only needed while assembling the final report.
         from tools import load_dataset_frame
 
+        # Load the cleaned dataframe and compute one non-null count per column.
         df = load_dataset_frame(cleaned_path)
         total = len(df)
         counts = {str(col): int(df[col].notna().sum()) for col in df.columns}
         return total, counts
     except Exception as error:
+        # If the cleaned file cannot be read, log a warning and return safe empty values.
         print(f"[report] warning: could not compute non-null counts: {error}", file=sys.stderr)
         return 0, {}
 
@@ -64,6 +73,8 @@ def build_final_report(
     verification_report: ConsistencyVerificationReport | None,
     dataset_path: Path | None = None,
 ) -> FinalPipelineReport:
+    '''Combines validation, remediation, cleaning, and verification outputs into one final report object.'''
+    # Build compact count summaries for each validation area.
     validation_summary = {
         "schema_issues": len(validation_results.schema_validation.issues),
         "completeness_columns_with_missing": len(validation_results.completeness_analysis.columns_with_missing_values),
@@ -73,6 +84,7 @@ def build_final_report(
         "duplicate_groups": len(validation_results.duplicate_detection.groups) if validation_results.duplicate_detection else 0,
     }
 
+    # Group remediation actions by status so the final report can summarize what happened.
     applied_actions = [action for action in remediation_plan.actions if action.status == "applied"]
     proposed_not_applied_actions = [action for action in remediation_plan.actions if action.status == "proposed_not_applied"]
     failed_actions = [action for action in remediation_plan.actions if action.status == "failed"]
@@ -86,15 +98,19 @@ def build_final_report(
         if action.status == "proposed_not_applied"
     ]
 
+    # Use the verification summary when available, otherwise provide a fallback message.
     verification_summary = verification_report.summary if verification_report is not None else "Verification was not run."
+    # Build one overall summary sentence for the final report.
     summary = (
         f"Validation found {sum(validation_summary.values())} section-level findings/signals. "
         f"Applied {len(applied_actions)} remediation actions, left {len(proposed_not_applied_actions)} proposed without auto-apply, "
         f"and recorded {len(failed_actions)} failed actions."
     )
 
+    # Read authoritative non-null counts from the cleaned CSV for later narrative tables.
     total_rows_cleaned, non_null_counts_cleaned = _compute_cleaned_non_null_counts(dataset_path)
 
+    # Normalize optional validation sections into plain lists.
     anomaly_findings = (
         list(validation_results.anomaly_detection.findings)
         if validation_results.anomaly_detection is not None
@@ -112,6 +128,7 @@ def build_final_report(
     )
     completeness_details = list(validation_results.completeness_analysis.per_column)
 
+    # Assemble the final structured report model.
     return FinalPipelineReport(
         dataset_name=validation_results.schema_validation.dataset_name,
         validation_summary=validation_summary,
@@ -137,13 +154,17 @@ def build_final_report(
 
 
 def narrative_report_path(path: Path) -> Path:
+    '''Builds the output path of the Markdown narrative report.'''
     return cleaning_cache_dir(path) / f"{path.stem}.narrative_report.md"
 
 
 def save_narrative_report(path: Path, report: NarrativeReport) -> Path:
+    '''Saves the narrative report as a Markdown file and returns its output path.'''
+    # Compute the narrative report path and make sure the folder exists.
     output_path = narrative_report_path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Render the report title, summary, sections, and recommendations as Markdown lines.
     lines: list[str] = [f"# {report.title}", "", report.executive_summary, ""]
     for section in report.sections:
         lines += [f"## {section.heading}", "", section.body, ""]
@@ -153,17 +174,22 @@ def save_narrative_report(path: Path, report: NarrativeReport) -> Path:
             lines.append(f"{i}. {rec}")
         lines.append("")
 
+    # Write the final Markdown document to disk.
     output_path.write_text("\n".join(lines), encoding="utf-8")
     return output_path
 
 
 def _format_pct(value: float) -> str:
+    '''Formats a numeric percentage with one decimal place.'''
     return f"{value:.1f}%"
 
 
 def _display_target(target: object) -> str:
+    '''Converts an action target into a short readable label for tables and summaries.'''
+    # If the target is already a plain value, just stringify it directly.
     if not isinstance(target, dict):
         return str(target)
+    # Extract the most common target fields used by remediation actions.
     column_name = target.get("column_name")
     new_name = target.get("new_name")
     target_dtype = target.get("target_dtype")
@@ -180,28 +206,37 @@ def _display_target(target: object) -> str:
 
 
 def _polish_narrative_body(body: str) -> str:
+    '''Applies small cleanup rules to generated narrative text.'''
+    # Remove backticks around ordinary inline text.
     body = re.sub(r"`([^`\n]+)`", r"\1", body)
+    # Trim overly precise percentages to cleaner one- or two-decimal forms.
     body = re.sub(r"(\d+\.\d{2})\d+%", r"\1%", body)
     body = re.sub(r"(\d+\.\d)0+%", r"\1%", body)
     return body
 
 
 def _md_cell(value: object) -> str:
+    '''Normalizes one value so it is safe to insert into a Markdown table cell.'''
     if value is None:
         return "-"
     if isinstance(value, list):
+        # Lists become comma-separated text.
         text = ", ".join(str(item) for item in value)
     else:
         text = str(value)
+    # Replace characters that would break Markdown table formatting.
     text = text.replace("|", "/").replace("\n", " ").strip()
     return text or "-"
 
 
 def _markdown_table(headers: list[str], rows: list[list[object]]) -> str:
+    '''Builds a Markdown table from headers and row values.'''
+    # Start with the header row and the Markdown separator row.
     lines = [
         "| " + " | ".join(headers) + " |",
         "| " + " | ".join("---" for _ in headers) + " |",
     ]
+    # Add one sanitized row per record.
     for row in rows:
         lines.append("| " + " | ".join(_md_cell(cell) for cell in row) + " |")
     return "\n".join(lines)
@@ -209,8 +244,10 @@ def _markdown_table(headers: list[str], rows: list[list[object]]) -> str:
 
 def _build_narrative_briefing(report: FinalPipelineReport) -> str:
     """Build a condensed text briefing from the FinalPipelineReport, organized by topic."""
+    # Collect briefing lines that summarize the pipeline outputs in a structured text block.
     lines: list[str] = []
 
+    # Start with dataset-level facts and top-level summaries.
     lines.append(f"DATASET: {report.dataset_name}")
     lines.append(f"VALIDATION SUMMARY: {report.validation_summary}")
     lines.append(f"CLEANING SUMMARY: {report.cleaning_summary}")
@@ -368,6 +405,7 @@ def _build_narrative_briefing(report: FinalPipelineReport) -> str:
     for action in report.applied_actions:
         applied_by_type.setdefault(action.action_type, []).append(action)
 
+    # Add a grouped summary of all applied actions.
     lines.append("=" * 60)
     lines.append("APPLIED ACTIONS")
     lines.append("=" * 60)
@@ -405,6 +443,7 @@ def _build_narrative_briefing(report: FinalPipelineReport) -> str:
     for action in report.proposed_not_applied_actions:
         proposed_by_type.setdefault(action.action_type, []).append(action)
 
+    # Add deferred and manual-review actions separately from successful ones.
     lines.append("=" * 60)
     lines.append(
         f"DEFERRED / MANUAL REVIEW ({len(report.proposed_not_applied_actions)} actions) — "
@@ -448,10 +487,13 @@ def _build_narrative_briefing(report: FinalPipelineReport) -> str:
             if action.preview_stats:
                 lines.append(f"    Stats: {action.preview_stats}")
 
+    # Join all collected briefing lines into one long prompt-friendly string.
     return "\n".join(lines)
 
 
 def _fallback_narrative_report(final_report: FinalPipelineReport) -> NarrativeReport:
+    '''Builds a deterministic narrative report when model-based generation is unavailable or fails.'''
+    # Prepare schema-related rows for the fallback schema section tables.
     renamed_columns = [
         [action.target.get("column_name", ""), action.target.get("new_name", ""), action.reason]
         for action in final_report.applied_actions
@@ -477,6 +519,7 @@ def _fallback_narrative_report(final_report: FinalPipelineReport) -> NarrativeRe
         if detail.missing_like_count > 0
     ]
 
+    # Build quick lookup maps so cleaner summaries can merge action and verification information.
     cleaner_action_map = {
         action.target.get("column_name"): action
         for action in final_report.applied_actions
@@ -488,6 +531,7 @@ def _fallback_narrative_report(final_report: FinalPipelineReport) -> NarrativeRe
         if diff.renamed_to:
             verification_map[diff.renamed_to] = diff
 
+    # Build one compact block per generated cleaner for the fallback format-consistency section.
     format_blocks: list[str] = []
     for artifact in final_report.generated_cleaners:
         action = cleaner_action_map.get(artifact.column_name)
@@ -509,6 +553,7 @@ def _fallback_narrative_report(final_report: FinalPipelineReport) -> NarrativeRe
             block.extend(changed_examples)
         format_blocks.append("\n".join(block))
 
+    # Build deterministic text for the anomaly, cross-column, and duplicate sections.
     anomaly_body = (
         "No anomaly findings were recorded for this dataset. The anomaly stage therefore contributes no "
         "numeric outlier or rare-category items to the remediation queue."
@@ -537,6 +582,7 @@ def _fallback_narrative_report(final_report: FinalPipelineReport) -> NarrativeRe
         ]
     ) or "No duplicate row groups were recorded."
 
+    # Build rows for the remediation and verification summary tables.
     remediation_rows = [
         [action.action_type, action.status, _display_target(action.target), action.reason]
         for action in (
@@ -556,6 +602,7 @@ def _fallback_narrative_report(final_report: FinalPipelineReport) -> NarrativeRe
         ]
         for diff in final_report.verification_diffs
     ]
+    # Build bullet lines for unresolved risks and manual-review items.
     risk_lines = [f"- unresolved risk: {risk}" for risk in final_report.unresolved_risks]
     for action in final_report.manual_review_queue[:20]:
         if action.action_type == "drop_rows_candidate" and isinstance(action.target, dict):
@@ -569,6 +616,7 @@ def _fallback_narrative_report(final_report: FinalPipelineReport) -> NarrativeRe
     if not risk_lines:
         risk_lines = ["- No unresolved risks or manual-review items were recorded."]
 
+    # Compose reusable body parts for the schema and completeness sections.
     schema_body_parts = [
         "The schema stage standardized naming and dtype assignments so the cleaned dataset follows one consistent contract."
     ]
@@ -599,6 +647,7 @@ def _fallback_narrative_report(final_report: FinalPipelineReport) -> NarrativeRe
     else:
         completeness_body_parts.append("No placeholder-driven completeness issues were recorded.")
 
+    # Assemble the ordered set of fallback narrative sections.
     sections = [
         NarrativeReportSection(
             heading="Dataset Overview",
@@ -666,6 +715,7 @@ def _fallback_narrative_report(final_report: FinalPipelineReport) -> NarrativeRe
         ),
     ]
 
+    # Return the completed fallback narrative report model.
     return NarrativeReport(
         title=f"Dataset Quality Report — {final_report.dataset_name}",
         executive_summary=(
@@ -685,6 +735,7 @@ def _fallback_narrative_report(final_report: FinalPipelineReport) -> NarrativeRe
 
 
 def _build_frontmatter_brief(final_report: FinalPipelineReport) -> str:
+    '''Builds a compact briefing for the narrative frontmatter agent.'''
     return "\n".join(
         [
             f"DATASET: {final_report.dataset_name}",
@@ -706,6 +757,8 @@ def _build_frontmatter_brief(final_report: FinalPipelineReport) -> str:
 
 
 def _build_narrative_section_specs(final_report: FinalPipelineReport) -> list[tuple[str, str]]:
+    '''Builds one detailed instruction block per narrative section for chunked generation.'''
+    # Prepare compact lines for rename and dtype-cast actions.
     rename_lines = [
         f"- rename: {action.target.get('column_name')} -> {action.target.get('new_name')} | reason={action.reason}"
         for action in final_report.applied_actions
@@ -721,6 +774,7 @@ def _build_narrative_section_specs(final_report: FinalPipelineReport) -> list[tu
         for detail in final_report.completeness_details
         if detail.missing_like_count > 0 or detail.missing_like_examples
     ] or ["- No missing-like placeholder findings requiring detail."]
+    # Build lookup maps so section prompts can connect cleaner output with verification results.
     cleaner_action_map = {
         action.target.get("column_name"): action
         for action in final_report.applied_actions
@@ -732,6 +786,7 @@ def _build_narrative_section_specs(final_report: FinalPipelineReport) -> list[tu
         if diff.renamed_to:
             verification_map[diff.renamed_to] = diff
 
+    # Build one summary line per generated cleaner using real example transformations only.
     format_lines = []
     for artifact in final_report.generated_cleaners:
         action = cleaner_action_map.get(artifact.column_name)
@@ -755,6 +810,7 @@ def _build_narrative_section_specs(final_report: FinalPipelineReport) -> list[tu
         )
     if not format_lines:
         format_lines = ["- No generated cleaners were recorded."]
+    # Build compact prompt lines for the other narrative sections.
     anomaly_lines = [
         f"- {finding.column_name}: type={finding.anomaly_type}, severity={finding.severity}, affected_rows={finding.affected_rows}, examples={finding.example_values[:5]}, evidence={finding.evidence}"
         for finding in final_report.anomaly_findings
@@ -789,6 +845,7 @@ def _build_narrative_section_specs(final_report: FinalPipelineReport) -> list[tu
     if not risk_lines:
         risk_lines = ["- No unresolved risks or manual-review items were recorded."]
 
+    # Return the ordered list of report sections and their section-specific instructions.
     return [
         (
             "Dataset Overview",
@@ -951,9 +1008,12 @@ def _build_narrative_section_specs(final_report: FinalPipelineReport) -> list[tu
 
 
 def _generate_narrative_report_chunked(final_report: FinalPipelineReport) -> NarrativeReport:
+    '''Generates the narrative report in chunks using separate agents for frontmatter and body sections.'''
+    # Import the agents lazily because they are only needed when generating the narrative.
     from agents import narrative_frontmatter_agent, narrative_section_agent
     from tools.common_tools import attach_text_document, run_agent_with_backoff
 
+    # Generate the title, executive summary, and recommendations first.
     frontmatter = run_agent_with_backoff(
         narrative_frontmatter_agent,
         [
@@ -962,6 +1022,7 @@ def _generate_narrative_report_chunked(final_report: FinalPipelineReport) -> Nar
         ],
     ).output
 
+    # Generate each narrative section independently from its own briefing block.
     sections: list[NarrativeReportSection] = []
     for heading, briefing in _build_narrative_section_specs(final_report):
         section = run_agent_with_backoff(
@@ -974,11 +1035,14 @@ def _generate_narrative_report_chunked(final_report: FinalPipelineReport) -> Nar
                 attach_text_document(briefing),
             ],
         ).output
+        # Force the returned heading to match the expected section heading if needed.
         if section.heading != heading:
             section = section.model_copy(update={"heading": heading})
+        # Lightly clean the generated body text before saving it.
         section = section.model_copy(update={"body": _polish_narrative_body(section.body)})
         sections.append(section)
 
+    # Assemble the final narrative report from generated frontmatter and sections.
     return NarrativeReport(
         title=frontmatter.title,
         executive_summary=_polish_narrative_body(frontmatter.executive_summary),
@@ -988,9 +1052,12 @@ def _generate_narrative_report_chunked(final_report: FinalPipelineReport) -> Nar
 
 
 def generate_narrative_report(final_report: FinalPipelineReport) -> NarrativeReport:
+    '''Generates a narrative report, falling back to a deterministic version if chunked generation fails.'''
     try:
+        # Prefer the chunked model-based narrative generation path.
         return _generate_narrative_report_chunked(final_report)
     except Exception as error:
+        # If model generation fails, log the warning and return a safe fallback report.
         print(
             f"[report] warning: chunked narrative generation failed, using deterministic fallback: {error}",
             file=sys.stderr,

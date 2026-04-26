@@ -495,62 +495,77 @@ def run_cleaner_application_with_plan(
     else: #if there is no plan log the skip
         print("  no remediation plan loaded - skipping exact duplicate column drops.", file=sys.stderr)
 
+    #Start step 4 logging
     print("\n[apply] step 4 - column renames (from schema cache)", file=sys.stderr)
     _emit("step 4 — applying schema renames")
-    # Rename columns according to schema-based naming suggestions.
+    # Rename columns according to schema-based naming suggestions
     df, rename_map = _apply_column_renames(df, path)
     if rename_map:
         _emit(f"  renamed {len(rename_map)} columns")
+    #Loop through actions
     for action in actions:
+        #skip unrelated actions
         if action.action_type != "rename_column":
             continue
+        #Read old column name
         column_name = str(action.target.get("column_name", ""))
+        #Read expected new name
         new_name = str(action.target.get("new_name", ""))
+        #If the actual rename map matches the action, mark the action as applied
         if rename_map.get(column_name) == new_name:
             action.status = "applied"
+        #If the old column is no longer in the dataframe,mark the action as not needed
         elif column_name not in df.columns:
             action.status = "not_needed"
+        #otherwise, mark as not needed
         else:
             action.status = "not_needed"
 
+    #Start step 5 logging
     print("\n[apply] step 5 - dtype casting (from schema cache)", file=sys.stderr)
     _emit("step 5 — casting dtypes")
-    # Cast columns into their target dtypes using schema metadata.
+    # Cast columns into their target dtypes using schema metadata
     df, cast_results = _apply_dtype_casts(df, path)
+    #Count how many casts were actually applied
     _applied_casts = sum(1 for s in cast_results.values() if s == "applied")
-    if _applied_casts:
+    if _applied_casts: #if at least one was applied, send update
         _emit(f"  {_applied_casts} dtype cast{'s' if _applied_casts != 1 else ''} applied")
     for action in actions:
-        if action.action_type != "cast_dtype":
+        if action.action_type != "cast_dtype": #Skip unrelated actions
             continue
         column_name = str(action.target.get("column_name", ""))
+        #Look up the cast result, defaulting to not needed if the column was not in the dataframe or had no schema info
         status = cast_results.get(column_name, "not_needed")
+        #Set the action status accordingly
         action.status = status if status in {"applied", "failed"} else "not_needed"
 
+    #Start step 6 logging
     print("\n[apply] step 6 - lowercase string columns", file=sys.stderr)
     _emit("step 6 — lowercasing string columns")
-    # Lowercase string columns as a final text-normalization pass.
+    # Lowercase string columns as a final text-normalization pass
     df, lowercased_total, lowercased_by_column = _apply_string_lowercasing(df, path)
     if lowercased_total:
+        #Send a short lowercasing summary if it was applied
         _emit(
             f"  lowercased {lowercased_total} string value{'s' if lowercased_total != 1 else ''} "
             f"across {len(lowercased_by_column)} column{'s' if len(lowercased_by_column) != 1 else ''}"
         )
 
-    # Save the final cleaned dataframe to the cleaning cache directory.
-    output_dir = cleaning_cache_dir(path)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    cleaned_path = cleaned_dataset_path(path)
-    df.to_csv(cleaned_path, index=False)
+    # Save the final cleaned dataframe to the cleaning cache directory
+    output_dir = cleaning_cache_dir(path) #Get the cleaning cache directory
+    output_dir.mkdir(parents=True, exist_ok=True) #Ensure the output directory exists
+    cleaned_path = cleaned_dataset_path(path) #Build the output path of the cleaned CSV
+    df.to_csv(cleaned_path, index=False) #Save the cleaned dataframe as CSV
+    #Log where the cleaned dataset was saved
     print(f"\n[apply] cleaned dataset saved -> {cleaned_path}", file=sys.stderr)
 
-    # Persist the updated cleaner manifest and remediation plan statuses.
-    save_cleaner_manifest(path, applied_artifacts)
+    save_cleaner_manifest(path, applied_artifacts) #Save the updated cleaner artifact manifest
     if remediation_plan is not None:
+        #Save the updated remediation plan with new action statuses
         save_remediation_plan(path, remediation_plan)
 
-    # Build the final cleaning report with dataset shape changes, unresolved risks, and a compressed CSV snapshot.
-    cleaning_report = CleaningReport(
+    # Build the final cleaning report with dataset shape changes, unresolved risks, and a compressed CSV snapshot
+    cleaning_report = CleaningReport( #Create the final cleaning report object
         dataset_name=path.stem,
         rows_before=rows_before,
         rows_after=len(df),
@@ -558,6 +573,7 @@ def run_cleaner_application_with_plan(
         columns_after=len(df.columns),
         generated_cleaners=applied_artifacts,
         unresolved_risks=unresolved_risks,
+        #Store the cleaned CSV content compressed and encoded as base64
         cleaned_csv_gzip_base64=gzip_text_to_base64(df.to_csv(index=False)),
         summary=(
             f"Applied {len(applied_artifacts)} format cleaners, replaced {total_replaced} placeholder values, "
@@ -570,6 +586,9 @@ def run_cleaner_application_with_plan(
 
 def run_cleaner_application(path: Path, on_event=None) -> CleaningReport:
     '''Runs the full application workflow and returns only the final cleaning report.'''
-    # This is a small convenience wrapper around the more detailed application function.
+    # This is a small convenience wrapper around the more detailed application function
     cleaning_report, _, _ = run_cleaner_application_with_plan(path, on_event=on_event)
+    #Call the full application function, but ignore execution reports and remediation plan
+    #it returns only the final cleaning report
     return cleaning_report
+#It gives a simpler public entry point when only the final cleaning report is needed
