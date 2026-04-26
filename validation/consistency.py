@@ -518,13 +518,7 @@ async def _run_column_format_checks_async(
     # Restore the original column order before returning
     return [reports_by_index[index] for index in range(len(column_names))]
 
-
-def run_format_consistency_validation(
-    path: Path,
-    reuse_cache: bool = False,
-    read_as_str: bool = False,
-    max_workers: int = 1,
-) -> ConsistencyValidationReport:
+def run_format_consistency_validation(path: Path, reuse_cache: bool = False, read_as_str: bool = False, max_workers: int = 1) -> ConsistencyValidationReport:
     """Run format consistency checks for all columns and return the combined report.
 
     When max_workers > 1, columns are checked concurrently using async tasks. Schema context
@@ -538,12 +532,8 @@ def run_format_consistency_validation(
     format_findings: list[FormatConsistencyFinding] = []
 
     # Load schema to provide pattern and dtype context to each column check
-    schema_map: dict[str, SchemaColumnEntry] = {}
-    try:
-        handoff = load_schema_handoff(path)
-        schema_map = {col.name: col for col in handoff.columns}
-    except Exception:
-        pass
+    handoff = load_schema_handoff(path)
+    schema_map = {col.name: col for col in handoff.columns}
 
     column_names = list(df.columns)
     # Use the synchronous path for single-worker runs to keep the event loop simple
@@ -551,9 +541,8 @@ def run_format_consistency_validation(
         reports = []
         for column_name in column_names:
             schema_entry = schema_map.get(column_name)
-            reports.append(
-                run_column_format_check(df, column_name, path.stem, "original validation", schema_entry=schema_entry)
-            )
+            # Compute the report for this column and append it to the list of reports
+            reports.append(run_column_format_check(df, column_name, path.stem, "original validation", schema_entry=schema_entry))
     else:
         # Cap the worker count so we never spawn more tasks than there are columns
         worker_count = min(max_workers, len(column_names))
@@ -562,15 +551,15 @@ def run_format_consistency_validation(
             file=sys.stderr,
             flush=True,
         )
-        reports = asyncio.run(
-            _run_column_format_checks_async(df, column_names, path.stem, schema_map, worker_count)
-        )
+        # Run all column checks concurrently and collect the reports as they complete, then reorder them to match the original column order
+        reports = asyncio.run(_run_column_format_checks_async(df, column_names, path.stem, schema_map, worker_count))
 
     # Collect only the columns that actually have a finding
     for result in reports:
         if result.finding is not None:
             format_findings.append(result.finding)
 
+    # Build the final consistency report with a summary of the findings
     report = ConsistencyValidationReport(
         dataset_name=path.stem,
         total_rows=len(df),
@@ -580,5 +569,6 @@ def run_format_consistency_validation(
             f"detected {len(format_findings)} format issues."
         ),
     )
+    # Save it to disk for downstream stages to consume.
     save_consistency(path, report)
     return report

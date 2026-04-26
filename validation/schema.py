@@ -232,79 +232,75 @@ def build_schema_issues(columns: list[SchemaColumnEntry], duplicate_groups: list
 
     return issues
 
-
 def run_dtype_inference(path: Path) -> DatasetDtypeInference:
-    """Load the dataset, build a column profile text, and ask the agent to infer the target dtype per column."""
+    """Run the dtype inference agent on the given dataset path and return the inferred dtypes for each column."""
     df = load_dataset_frame(path)
-    # Build a human-readable profile text to attach to the agent prompt
+    # Build the text document for the agent: include column names and samples for each column, formatted clearly.
     text = build_dtype_inference_text(df)
-    prompt = ["Infer the correct pandas dtype for each column based on the attached CSV sample.", attach_text_document(text)]
+    # Attach the text as a document and run the agent with backoff retries. The agent will return a DatasetDtypeInference object.
+    prompt = ["Infer the correct pandas dtype for each column based on the attached CSV sample.",attach_text_document(text)]
     print(f"[orchestrator][schema][dtype-inference] dataset='{path.stem}'", file=sys.stderr, flush=True)
+    # Run the agent with backoff retries and return the output field, which contains the inferred dtypes.
     result = run_agent_with_backoff(dtype_inference_agent, prompt)
     return result.output
 
 def run_schema_validation(path: Path, reuse_cache: bool = False) -> SchemaHandoff:
-    """Run the full schema validation stage and return a SchemaHandoff ready for downstream use.
-
-    Orchestrates dtype inference, statistical profiling, duplicate column detection, naming
-    validation, and a final summary pass. The result is cached to disk.
-    """
+    """Run the schema validation agent on the given dataset path and return a SchemaHandoff object containing the analysis results."""
     if reuse_cache:
+        # If reuse_cache is True, load the existing handoff from disk instead of re-running the analysis. This allows us to skip expensive agent calls when we just want to inspect or use the results.
         return load_schema_handoff(path)
 
     df = load_dataset_frame(path)
 
-    # Run dtype inference first so the profile can use the inferred dtypes as overrides
+    # Run dtype inference first to get the agent's best guess at each column's dtype.
     dtype_inference = run_dtype_inference(path)
+    # Build a mapping from column name to inferred dtype column for easy lookup.
     dtype_map = {col.column_name: col for col in dtype_inference.columns}
     dtype_overrides = {name: col.pandas_dtype for name, col in dtype_map.items()}
 
+    # Build the dataset profile, which includes statistics and samples for each column. Pass the dtype overrides to ensure the profile uses the agent's inferred dtypes.
     profile = build_dataset_profile(df, path.stem, dtype_overrides=dtype_overrides)
 
-    # Detect duplicate columns by comparing their canonical (normalised) names
+    # Store columns with the same normalized name together to detect potential duplicates.
     duplicate_groups_by_name: dict[str, list[str]] = {}
     for col_name in df.columns:
         canonical = normalized_schema_name(col_name)
         duplicate_groups_by_name.setdefault(canonical, []).append(col_name)
-    # Keep only groups with more than one column — single entries are not duplicates
-    duplicate_groups = [
-        SchemaDuplicateGroup(canonical_name=cn, columns=cols)
-        for cn, cols in duplicate_groups_by_name.items()
-        if len(cols) > 1
-    ]
+    
+    # Only keep groups with more than one column, as singletons are not duplicates.
+    duplicate_groups = [SchemaDuplicateGroup(canonical_name=cn, columns=cols) for cn, cols in duplicate_groups_by_name.items() if len(cols) > 1]
 
-    # Build one SchemaColumnEntry per column, merging agent inference with the statistical profile
+    # Build the list of SchemaColumnEntry objects that contain the analysis for each column
     columns: list[SchemaColumnEntry] = []
+
+    # Iterate over the column profiles from the dataset profile 
     for col_profile in profile.columns_profiles:
         name = col_profile.column_name
         dtype_col = dtype_map.get(name)
-        naming_valid = is_valid_schema_name(name)
-        pandas_dtype, numeric_role, string_role, detected_pattern, rationale = _normalize_dtype_inference_choice(
-            name,
-            dtype_col,
-            col_profile,
-        )
+        # Determine the final pandas dtype and roles for this column, based on the agent's inference and the column profile.
+        dtype_inference_choice = _normalize_dtype_inference_choice(name, dtype_col, col_profile)
         columns.append(SchemaColumnEntry(
-            name=name,
-            pandas_dtype=pandas_dtype,
-            numeric_role=numeric_role,
-            string_role=string_role,
-            detected_pattern=detected_pattern,
-            rationale=rationale,
-            non_null_rows=col_profile.non_null_rows,
-            distinct_non_null_values=col_profile.distinct_non_null_values,
+            name = col_profile.column_name,
+            pandas_dtype = dtype_inference_choice[0], # The final pandas dtype to assign to this column, based on the agent's inference and the profile statistics.
+            numeric_role = dtype_inference_choice[1], # The numeric role assigned to this column based on the agent's inference and the profile statistics.
+            string_role = dtype_inference_choice[2], # The string role assigned to this column based on the agent's inference and the profile statistics.
+            detected_pattern = dtype_inference_choice[3], # The pattern detected for this column based on the agent's inference and the profile statistics.
+            rationale = dtype_inference_choice[4], # The rationale for the dtype inference choice.
+            non_null_rows = col_profile.non_null_rows,
+            distinct_non_null_values = col_profile.distinct_non_null_values,
             numeric_parse_pct=col_profile.numeric_parse_pct,
             datetime_parse_pct=col_profile.datetime_parse_pct,
             empty_like_pct=col_profile.empty_like_pct,
             sample_values=col_profile.sample_values,
-            naming_valid=naming_valid,
-            rename_suggestion=suggest_schema_name(name) if not naming_valid else None,
-            naming_reason=naming_rule_reason(name) if not naming_valid else None,
+            naming_valid = is_valid_schema_name(name), # Check if the column name is valid according to the naming rules.
+            naming_reason = naming_rule_reason(name) if not is_valid_schema_name(name) else None, # If the name is not valid, provide a reason why it violates the naming rules
+            rename_suggestion = suggest_schema_name(name) if not is_valid_schema_name(name) else None,# If the name is not valid, suggest a valid name based on the original.
         ))
 
-    # Build the list of SchemaIssue entries from naming violations and duplicate column groups
+    # Build the list of schema issues based on the column analysis and duplicate groups. 
     issues = build_schema_issues(columns, duplicate_groups)
 
+    # Create the SchemaHandoff object that contains the dataset name, column analysis, and detected issues.
     handoff = SchemaHandoff(
         dataset_name=path.stem,
         total_rows=len(df),
@@ -313,16 +309,13 @@ def run_schema_validation(path: Path, reuse_cache: bool = False) -> SchemaHandof
         issues=issues,
         duplicate_groups=duplicate_groups,
     )
-    # Ask the summary agent to write a concise handoff text over the already-built findings
     print(f"[orchestrator][schema][summary] dataset='{path.stem}'", file=sys.stderr, flush=True)
-    result = run_agent_with_backoff(schema_summary_agent, [
-        (
-            f"Summarize the provided schema analysis for dataset {path.stem}. "
-            "Do not infer new findings. Summarize the provided findings for a later cleaner or validator."
-        ),
-        attach_profile_text(handoff),
-    ])
-    handoff = handoff.model_copy(update={"summary": result.output.summary})
 
+    # Run the schema summary agent to generate a concise summary of the schema analysis, which will be included in the handoff for downstream use.
+    prompt = f"Summarize the provided schema analysis for dataset {path.stem}. Do not infer new findings."                                                                                                                                                  
+    result = run_agent_with_backoff(schema_summary_agent, [prompt, attach_profile_text(handoff)])
+    
+    # Update the handoff with the generated summary and save it to disk for downstream stages to consume.
+    handoff = handoff.model_copy(update={"summary": result.output.summary})
     save_schema_handoff(path, handoff)
     return handoff

@@ -1,7 +1,9 @@
-"""Cross-column and dataset-wide quality checks: numeric outliers, rare
-categories, duplicate / near-duplicate columns and rows, semantic conflicts,
-and date-ordering rules. Consumed by the anomaly, cross-column and duplicate
-agents."""
+"""Cross-column and dataset-wide quality heuristics for later validation stages.
+
+Implements the deterministic detectors used by the anomaly, cross-column, and
+duplicate-detection stages: numeric outliers, rare categories, duplicate-like
+columns, semantic conflicts, period mismatches, date-order violations, and
+exact / near-duplicate rows."""
 
 from __future__ import annotations
 
@@ -17,12 +19,14 @@ from tools.schema_tools import normalized_schema_name
 
 
 def normalize_cell_text(value: object) -> str:
+    """Normalize a cell into a whitespace-collapsed lowercase comparison string."""
     if value is None or pd.isna(value):
         return ""
     return " ".join(str(value).strip().lower().split())
 
 
 def render_cell_text(value: object) -> str | None:
+    """Render a cell for human-readable evidence output, preserving original case."""
     if value is None or pd.isna(value):
         return None
     rendered = str(value).strip()
@@ -30,25 +34,31 @@ def render_cell_text(value: object) -> str | None:
 
 
 def is_missing_like(value: object) -> bool:
+    """Return True when a single value should be treated as placeholder-like missingness."""
     normalized = normalize_cell_text(value)
     return normalized in PLACEHOLDER_TOKENS
 
 
 def _series_to_numeric(series: pd.Series) -> pd.Series:
+    """Coerce a series to numeric with light normalization for decimal commas."""
     normalized = series.astype(str).str.strip().str.replace(",", ".", regex=False)
+    # Restore real nulls before coercion so they do not become the literal string "nan".
     normalized = normalized.where(~series.isna(), None)
     return pd.to_numeric(normalized, errors="coerce")
 
 
 def detect_numeric_outlier_candidates(df: pd.DataFrame, schema_columns: list[Any]) -> list[dict[str, Any]]:
+    """Detect robust-IQR numeric outliers for measure-like numeric columns only."""
     findings: list[dict[str, Any]] = []
     for column in schema_columns:
+        # Codes and indicators may be numeric but should not be judged as continuous measures.
         if column.pandas_dtype not in {"Int64", "Float64"}:
             continue
         if column.numeric_role in {"code", "indicator"}:
             continue
 
         numeric = _series_to_numeric(df[column.name]).dropna()
+        # Require enough sample size and spread to avoid noisy outlier labels on tiny columns.
         if len(numeric) < 20 or numeric.nunique() < 10:
             continue
 
@@ -58,6 +68,7 @@ def detect_numeric_outlier_candidates(df: pd.DataFrame, schema_columns: list[Any
         if iqr == 0:
             continue
 
+        # Use a conservative 3*IQR band to reduce false positives on naturally skewed public-data distributions.
         lower = q1 - 3 * iqr
         upper = q3 + 3 * iqr
         mask = (numeric < lower) | (numeric > upper)
@@ -92,8 +103,10 @@ def detect_numeric_outlier_candidates(df: pd.DataFrame, schema_columns: list[Any
 
 
 def detect_rare_category_candidates(df: pd.DataFrame, schema_columns: list[Any]) -> list[dict[str, Any]]:
+    """Detect suspiciously rare labels in low-to-moderate-cardinality categorical columns."""
     findings: list[dict[str, Any]] = []
     for column in schema_columns:
+        # Free text, names, and identifiers are expected to have many unique values and should not trigger this rule.
         if column.pandas_dtype not in {"string", "object"}:
             continue
         if column.string_role in {"free_text", "name", "identifier"}:
@@ -111,10 +124,12 @@ def detect_rare_category_candidates(df: pd.DataFrame, schema_columns: list[Any])
 
         distinct = rendered.nunique()
         distinct_ratio = distinct / len(rendered)
+        # Skip columns that are too small, too high-cardinality, or too diverse for rare-category heuristics to be meaningful.
         if distinct < 5 or distinct_ratio > 0.2 or distinct > 50:
             continue
 
         counts = Counter(rendered)
+        # If no category is even moderately common, the column does not have a stable baseline to define "rare" against.
         if counts and (counts.most_common(1)[0][1] / len(rendered)) < 0.2:
             continue
         rare_threshold = max(1, math.floor(len(rendered) * 0.005))
@@ -146,14 +161,17 @@ def detect_rare_category_candidates(df: pd.DataFrame, schema_columns: list[Any])
 
 
 def _normalized_series(df: pd.DataFrame, column_name: str) -> pd.Series:
+    """Return one column normalized for case/whitespace-insensitive comparisons."""
     return df[column_name].map(normalize_cell_text)
 
 
 def _schema_column_map(schema_columns: list[Any]) -> dict[str, Any]:
+    """Build a name-to-schema-entry lookup map, skipping malformed entries."""
     return {column.name: column for column in schema_columns if getattr(column, "name", None)}
 
 
 def _dtype_family(column: Any) -> str:
+    """Collapse detailed pandas dtypes into broad comparison families."""
     pandas_dtype = getattr(column, "pandas_dtype", "") or ""
     if pandas_dtype in {"Int64", "Float64"}:
         return "numeric"
@@ -163,6 +181,7 @@ def _dtype_family(column: Any) -> str:
 
 
 def _eligible_column_pair(left: Any, right: Any) -> bool:
+    """Return True when two schema-described columns are comparable for duplicate-like checks."""
     if left is None or right is None:
         return False
     if _dtype_family(left) != _dtype_family(right):
@@ -177,6 +196,7 @@ def _eligible_column_pair(left: Any, right: Any) -> bool:
 
 
 def detect_duplicate_like_columns(df: pd.DataFrame, schema_columns: list[Any]) -> list[dict[str, Any]]:
+    """Detect exact and near-duplicate columns based on normalized row-wise agreement."""
     findings: list[dict[str, Any]] = []
     schema_map = _schema_column_map(schema_columns)
     seen_pairs: set[tuple[str, str]] = set()
@@ -194,6 +214,7 @@ def detect_duplicate_like_columns(df: pd.DataFrame, schema_columns: list[Any]) -
 
             left_norm = _normalized_series(df, left_name)
             right_norm = _normalized_series(df, right_name)
+            # Compare only rows where both columns contain a real, non-placeholder value.
             comparable = (
                 left_norm.ne("")
                 & right_norm.ne("")
@@ -206,6 +227,7 @@ def detect_duplicate_like_columns(df: pd.DataFrame, schema_columns: list[Any]) -
 
             left_present = int((left_norm.ne("") & ~left_norm.isin(PLACEHOLDER_TOKENS)).sum())
             right_present = int((right_norm.ne("") & ~right_norm.isin(PLACEHOLDER_TOKENS)).sum())
+            # Require strong overlap so we do not compare columns that rarely co-occur.
             overlap_share = comparable_count / max(min(left_present, right_present), 1)
             if overlap_share < 0.8:
                 continue
@@ -264,8 +286,10 @@ def detect_duplicate_like_columns(df: pd.DataFrame, schema_columns: list[Any]) -
 
 
 def detect_duplicate_semantic_conflicts(df: pd.DataFrame, duplicate_groups: list[Any]) -> list[dict[str, Any]]:
+    """Detect conflicting values inside schema-level duplicate-name column groups."""
     findings: list[dict[str, Any]] = []
     for group in duplicate_groups:
+        # Current heuristic only handles the simple and most actionable 2-column conflict case.
         if len(group.columns) != 2:
             continue
         left, right = group.columns
@@ -280,6 +304,13 @@ def detect_duplicate_semantic_conflicts(df: pd.DataFrame, duplicate_groups: list
             & ~left_norm.isin(PLACEHOLDER_TOKENS)
             & ~right_norm.isin(PLACEHOLDER_TOKENS)
         )
+        comparable_count = int(comparable.sum())
+        if comparable_count == 0:
+            continue
+
+        agreement = comparable & left_norm.eq(right_norm)
+        agreement_count = int(agreement.sum())
+        similarity_pct = round((agreement_count / comparable_count) * 100, 2)
         mismatch_mask = comparable & left_norm.ne(right_norm)
         mismatch_indices = list(df.index[mismatch_mask])
         if not mismatch_indices:
@@ -292,9 +323,11 @@ def detect_duplicate_semantic_conflicts(df: pd.DataFrame, duplicate_groups: list
                 "severity": "high",
                 "affected_rows": len(mismatch_indices),
                 "example_row_indices": mismatch_indices[:8],
+                "similarity_pct": similarity_pct,
                 "evidence": (
                     f"Columns {left!r} and {right!r} normalize to the same schema name but disagree on "
-                    f"{len(mismatch_indices)} rows where both values are present."
+                    f"{len(mismatch_indices)} of {comparable_count} rows where both values are present "
+                    f"({similarity_pct:.2f}% similarity)."
                 ),
                 "suggested_action": (
                     "Review whether one column should override the other, whether they need reconciliation rules, or whether both must be preserved separately."
@@ -306,10 +339,12 @@ def detect_duplicate_semantic_conflicts(df: pd.DataFrame, duplicate_groups: list
 
 
 def _find_pattern_columns(schema_columns: list[Any], pattern: str) -> list[Any]:
+    """Return schema columns whose detected pattern matches the given canonical label."""
     return [column for column in schema_columns if (column.detected_pattern or "").strip().lower() == pattern]
 
 
 def _looks_like_period_column(column: Any) -> bool:
+    """Heuristically identify YYYYMM-like period key columns from schema metadata."""
     pattern = (column.detected_pattern or "").strip().lower()
     if pattern == "yyyymm":
         return True
@@ -322,6 +357,7 @@ def _looks_like_period_column(column: Any) -> bool:
 
 
 def detect_year_month_period_mismatches(df: pd.DataFrame, schema_columns: list[Any]) -> list[dict[str, Any]]:
+    """Detect rows where year/month columns disagree with a companion YYYYMM period key."""
     findings: list[dict[str, Any]] = []
     year_columns = _find_pattern_columns(schema_columns, "4-digit year")
     month_columns = _find_pattern_columns(schema_columns, "month number (1-12)")
@@ -341,6 +377,7 @@ def detect_year_month_period_mismatches(df: pd.DataFrame, schema_columns: list[A
                 if not comparable.any():
                     continue
 
+                # Rebuild the expected YYYYMM key from year + zero-padded month and compare it with the stored period.
                 expected = (
                     year_values[comparable].astype(int).astype(str)
                     + month_values[comparable].astype(int).astype(str).str.zfill(2)
@@ -372,6 +409,7 @@ def detect_year_month_period_mismatches(df: pd.DataFrame, schema_columns: list[A
 
 
 def detect_date_order_violations(df: pd.DataFrame, schema_columns: list[Any]) -> list[dict[str, Any]]:
+    """Detect start/end datetime pairs where the start date occurs after the end date."""
     findings: list[dict[str, Any]] = []
     datetime_columns = [column for column in schema_columns if column.pandas_dtype == "datetime64[ns]"]
     if len(datetime_columns) < 2:
@@ -383,6 +421,7 @@ def detect_date_order_violations(df: pd.DataFrame, schema_columns: list[Any]) ->
 
     for start_column in datetime_columns:
         for end_column in datetime_columns:
+            # Identify likely temporal pairs from their normalized name tokens.
             if start_column.name == end_column.name:
                 continue
             if not (name_map[start_column.name] & start_tokens):
@@ -419,10 +458,12 @@ def detect_date_order_violations(df: pd.DataFrame, schema_columns: list[Any]) ->
 
 
 def _normalized_row_signature(row: pd.Series) -> tuple[str, ...]:
+    """Convert one full row into a normalized tuple suitable for duplicate grouping."""
     return tuple(normalize_cell_text(value) for value in row.tolist())
 
 
 def detect_exact_duplicate_groups(df: pd.DataFrame, max_groups: int = 25) -> list[dict[str, Any]]:
+    """Detect exact duplicate rows after case/whitespace normalization."""
     grouped: dict[tuple[str, ...], list[int]] = defaultdict(list)
     for index, (_, row) in enumerate(df.iterrows()):
         grouped[_normalized_row_signature(row)].append(index)
@@ -447,9 +488,11 @@ def detect_exact_duplicate_groups(df: pd.DataFrame, max_groups: int = 25) -> lis
 
 
 def infer_duplicate_key_columns(schema_columns: list[Any], df: pd.DataFrame) -> list[str]:
+    """Infer a small set of likely business-key columns for near-duplicate grouping."""
     selected: list[str] = []
     for column in schema_columns:
         tokens = set(normalized_schema_name(column.name).split("_"))
+        # Prefer explicit identifiers/codes, then temporal key components, then common id/code tokens in the name.
         if column.string_role == "identifier" or column.numeric_role == "code":
             selected.append(column.name)
         elif (column.detected_pattern or "").strip().lower() in {"4-digit year", "month number (1-12)", "yyyymm"}:
@@ -466,12 +509,14 @@ def detect_near_duplicate_groups(
     key_columns: list[str],
     max_groups: int = 25,
 ) -> list[dict[str, Any]]:
+    """Detect groups of rows that share inferred business keys but differ elsewhere."""
     if not key_columns:
         return []
 
     grouped: dict[tuple[str, ...], list[int]] = defaultdict(list)
     for index, (_, row) in enumerate(df[key_columns].iterrows()):
         key = tuple(normalize_cell_text(value) for value in row.tolist())
+        # Skip groups whose inferred key is entirely empty; they are not meaningful identifiers.
         if not any(key):
             continue
         grouped[key].append(index)
