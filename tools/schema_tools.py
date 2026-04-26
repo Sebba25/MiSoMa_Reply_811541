@@ -47,8 +47,7 @@ class SchemaDuplicateGroup(BaseModel):
 
 
 
-# --- Naming Convention Helpers ---
-
+# Naming Convention Helpers
 def is_valid_schema_name(name: str) -> bool:
     """Return True if the column name follows the lowercase snake_case convention.
     A leading underscore is allowed (e.g. '_internal'), but the rest must match."""
@@ -115,7 +114,7 @@ def naming_rule_reason(name: str) -> str:
     )
 
 
-# --- Profile Builders ---
+# Profile Builders
 def build_dtype_inference_text(df, n_rows: int = 100) -> str:
     """Serialize the dataset into a column-by-column text profile for the dtype inference agent.
     Each line contains the column name, up to n_rows unique non-null sample values,
