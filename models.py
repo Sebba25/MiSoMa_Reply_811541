@@ -147,7 +147,6 @@ class CompletenessColumnFinding(BaseModel):
     sparse_candidate: bool = False
     recommended_action: str
 
-
 class CompletenessAnalysisReport(BaseModel):
     dataset_name: str
     total_rows: int = Field(ge=0)

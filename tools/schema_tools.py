@@ -45,8 +45,6 @@ class SchemaDuplicateGroup(BaseModel):
     canonical_name: str                          # the shared normalized name
     columns: list[str] = Field(default_factory=list)  # original column names in this group
 
-
-
 # Naming Convention Helpers
 def is_valid_schema_name(name: str) -> bool:
     """Return True if the column name follows the lowercase snake_case convention.

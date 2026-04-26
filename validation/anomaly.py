@@ -65,21 +65,18 @@ def run_anomaly_detection(path: Path, reuse_cache: bool = False) -> AnomalyDetec
         return load_anomaly(path)
 
     df = load_dataset_frame(path)
-    # Load schema to inform suppression; fall back to empty if the schema stage has not run yet
-    try:
-        handoff = load_schema_handoff(path)
-        schema_columns = handoff.columns
-        suppressed_columns = _duplicate_semantic_suppressed_columns(handoff.columns, handoff.duplicate_groups)
-    except FileNotFoundError:
-        schema_columns = []
-        suppressed_columns = set()
+    # Load the schema handoff to get the list of columns and duplicate groups for suppression
+    handoff = load_schema_handoff(path)
+    schema_columns = handoff.columns
+    # Get the set of column names that should be suppressed in anomaly reporting due to being duplicate-semantic aliases of a preferred column
+    suppressed_columns = _duplicate_semantic_suppressed_columns(handoff.columns, handoff.duplicate_groups)
 
     # Run both detectors and filter out suppressed duplicate-semantic aliases
     findings = [
         AnomalyFinding(**finding)
         for finding in (
-            detect_numeric_outlier_candidates(df, schema_columns)
-            + detect_rare_category_candidates(df, schema_columns)
+            detect_numeric_outlier_candidates(df, schema_columns) # Detect numeric outliers based on IQR heuristics
+            + detect_rare_category_candidates(df, schema_columns) # Detect rare categorical values based on low-cardinality heuristics
         )
         if finding["column_name"] not in suppressed_columns
     ]
@@ -90,13 +87,8 @@ def run_anomaly_detection(path: Path, reuse_cache: bool = False) -> AnomalyDetec
         if findings
         else "No anomaly findings were detected by the current heuristic checks."
     )
-    report = AnomalyDetectionReport(
-        dataset_name=path.stem,
-        total_rows=len(df),
-        total_columns=len(df.columns),
-        findings=findings,
-        summary=fallback_summary,
-    )
+    # Build the initial report with findings and a fallback summary, which will be replaced by the agent's summary after narrative generation.
+    report = AnomalyDetectionReport(dataset_name=path.stem,total_rows=len(df),total_columns=len(df.columns),findings=findings,summary=fallback_summary)
     # Ask the summary agent to write a human-readable narrative over the already-built findings
     print(f"[orchestrator][anomaly][summary] dataset='{path.stem}'", file=sys.stderr, flush=True)
     report = report.model_copy(
@@ -112,5 +104,6 @@ def run_anomaly_detection(path: Path, reuse_cache: bool = False) -> AnomalyDetec
             )
         }
     )
+    # Save the final report
     save_anomaly(path, report)
     return report

@@ -36,13 +36,9 @@ def run_cross_column_validation(path: Path, reuse_cache: bool = False) -> CrossC
 
     df = load_dataset_frame(path)
     # Load schema to provide dtype and duplicate-group context to the detectors
-    try:
-        handoff = load_schema_handoff(path)
-        schema_columns = handoff.columns
-        duplicate_groups = handoff.duplicate_groups
-    except FileNotFoundError:
-        schema_columns = []
-        duplicate_groups = []
+    handoff = load_schema_handoff(path)
+    schema_columns = handoff.columns
+    duplicate_groups = handoff.duplicate_groups
 
     # Run all four detectors and merge their findings into a single list
     findings = [
@@ -61,6 +57,7 @@ def run_cross_column_validation(path: Path, reuse_cache: bool = False) -> CrossC
         if findings
         else "No cross-column consistency findings were detected by the current rule set."
     )
+    # Build the initial report with findings and a fallback summary
     report = CrossColumnValidationReport(
         dataset_name=path.stem,
         total_rows=len(df),
