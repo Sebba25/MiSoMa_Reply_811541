@@ -62,16 +62,22 @@ ProgressCallback = Callable[[str], None]
 
 
 def _emit(on_event: ProgressCallback | None, message: str) -> None:
+    '''Sends a progress message to the optional callback if one was provided.'''
+    # If there is no callback, there is nothing to send anywhere.
     if on_event is None:
         return
     try:
+        # Forward the message to the UI or caller-provided progress handler.
         on_event(message)
     except Exception:
+        # Progress reporting should never break the main cleaning workflow.
         pass
 
 
 def _stagnation_temperature(consecutive_stagnant_attempts: int) -> float:
-    """Temperature ramp 0.2 -> 0.5 used to escape deterministic repetition."""
+    '''Returns a slightly higher model temperature when repeated attempts get stuck.'''
+    # Increase the temperature gradually to encourage a different solution,
+    # but cap it so the output does not become too random.
     return min(0.2 + 0.1 * (consecutive_stagnant_attempts - 1), 0.5)
 
 
@@ -83,12 +89,16 @@ class _GenerationProgress:
     """
 
     def __init__(self, on_event: ProgressCallback | None = None) -> None:
+        '''Stores the optional callback used to forward progress updates.'''
         self._on_event = on_event
 
     def _forward(self, message: str) -> None:
+        '''Forwards a short progress message through the shared emitter helper.'''
         _emit(self._on_event, message)
 
     def attempt_start(self, column_name: str, attempt: int, total: int, stagnation: bool) -> None:
+        '''Reports the start of one generator attempt for a specific column.'''
+        # Print a detailed backend log line and also send a shorter UI-friendly message.
         print(
             f"[orchestrator][generator] column='{column_name}' attempt={attempt}/{total}"
             + (" [STAGNATION OVERRIDE active, temp bumped]" if stagnation else ""),
@@ -100,6 +110,7 @@ class _GenerationProgress:
         )
 
     def generator_accepted(self, column_name: str, attempt: int) -> None:
+        '''Reports that the generator produced a valid cleaner on this attempt.'''
         print(
             f"[orchestrator][generator] column='{column_name}' accepted on attempt {attempt}",
             file=sys.stderr,
@@ -113,6 +124,8 @@ class _GenerationProgress:
         total: int,
         leading_issue: CleanerValidationIssue,
     ) -> None:
+        '''Reports that validation failed and summarizes the first important issue.'''
+        # Rename one category to make the logs easier to understand at a glance.
         label = (
             "construction-failure"
             if leading_issue.category == "non_self_contained_function"
@@ -127,6 +140,7 @@ class _GenerationProgress:
         self._forward(f"  ✗ attempt {attempt} {label}: {short_reason}")
 
     def stagnation_noted(self, column_name: str, attempt: int, total: int, reason: str) -> None:
+        '''Reports that the loop is repeating itself without making real progress.'''
         print(
             f"[orchestrator][validator] column='{column_name}' no-progress warning on attempt {attempt}/{total}: "
             f"model {reason}; continuing until retry budget is exhausted unless the critic stops the run",
@@ -134,6 +148,7 @@ class _GenerationProgress:
         )
 
     def critic_started(self, column_name: str, n_issues: int) -> None:
+        '''Reports that the critic agent is about to review the validation failures.'''
         print(
             f"[orchestrator][critic] column='{column_name}' reviewing {n_issues} validation issues",
             file=sys.stderr,
@@ -141,10 +156,12 @@ class _GenerationProgress:
         self._forward(f"  → critic reviewing {n_issues} issues")
 
     def critic_diagnosis(self, column_name: str, diagnosis: CleanerRepairDiagnosis) -> None:
+        '''Logs the critic diagnosis and a few concrete repair examples.'''
         print(
             f"[orchestrator][critic] column='{column_name}' diagnosis: {diagnosis.root_cause}",
             file=sys.stderr,
         )
+        # Show only the first few exact repair examples to keep the logs readable.
         for repair in diagnosis.exact_repairs[:3]:
             actual = f", actual={repair.actual_output!r}" if repair.actual_output is not None else ""
             expected = f", expected={repair.expected_output!r}" if repair.expected_output is not None else ""
@@ -156,46 +173,53 @@ class _GenerationProgress:
 
 
 def _make_progress(on_event: ProgressCallback | None) -> _GenerationProgress:
+    '''Creates the default progress reporter used by the generation loop.'''
     return _GenerationProgress(on_event)
 
 
 @contextmanager
 def _generation_lock(path):
-    """Filesystem lock so two concurrent generators on the same dataset can't interleave.
-
-    Uses O_CREAT | O_EXCL — if the lock file already exists (another process or
-    another Streamlit script-run is inside the loop), raise immediately rather
-    than silently racing.
-    """
+    '''Prevents two cleaner-generation runs from writing to the same dataset cache at once.'''
+    # Build the cache directory and lock-file path for this dataset.
     cache_dir = cleaning_cache_dir(path)
     cache_dir.mkdir(parents=True, exist_ok=True)
     lock_path = cache_dir / ".generate.lock"
     try:
+        # Create the lock file only if it does not already exist.
+        # O_EXCL makes this fail immediately when another process already owns the lock.
         fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except FileExistsError as error:
+        # Give a clear error so the user knows another generation run is active.
         raise RuntimeError(
             f"Another cleaner generation is already running for {path.stem!r} "
             f"(lock file: {lock_path}). If no other process is running, delete the lock file and retry."
         ) from error
     try:
+        # Write the current process ID into the lock file for debugging.
         os.write(fd, str(os.getpid()).encode("utf-8"))
         os.close(fd)
         yield
     finally:
         try:
+            # Remove the lock file when the protected block finishes.
             lock_path.unlink()
         except FileNotFoundError:
+            # If it is already gone, there is nothing else to clean up.
             pass
 
 
 def _print_example_transformations(program: ColumnCleanerProgram) -> None:
+    '''Prints the verified example transformations and any remaining risks to stderr.'''
+    # Print a simple table header for the before/after examples.
     print(f"\n  {'ORIGINAL':<35} {'CLEANED':<35} RATIONALE", file=sys.stderr)
     print(f"  {'-' * 35} {'-' * 35} {'-' * 30}", file=sys.stderr)
+    # Print each example transformation produced by host-side verification.
     for transformation in program.example_transformations:
         original = repr(transformation.original_value)[:33]
         cleaned = repr(transformation.cleaned_value)[:33]
         print(f"  {original:<35} {cleaned:<35} {transformation.rationale}", file=sys.stderr)
 
+    # If the program still declares residual risks, print them after the table.
     if program.residual_risks:
         print("\n  Residual risks:", file=sys.stderr)
         for risk in program.residual_risks:
@@ -208,11 +232,14 @@ def run_cleaner_repair_critic(
     previous_program: ColumnCleanerProgram,
     validation_issues: list[CleanerValidationIssue],
 ) -> CleanerRepairDiagnosis:
+    '''Calls the critic agent to diagnose why the previous cleaner failed validation.'''
+    # Bundle the request, failed program, and validation issues into one structured object.
     context = CleanerRepairContext(
         request=request,
         previous_program=previous_program,
         validation_issues=validation_issues,
     )
+    # Build a short instruction plus a structured profile document for the critic.
     prompt = [
         (
             f"Diagnose the failed cleaner for dataset {dataset_name}, column {request.column_name}. "
@@ -221,6 +248,7 @@ def run_cleaner_repair_critic(
         ),
         attach_profile_text(context),
     ]
+    # Run the critic synchronously and return its structured diagnosis.
     return run_agent_with_backoff(cleaner_repair_critic_agent, prompt).output
 
 
@@ -230,11 +258,14 @@ async def run_cleaner_repair_critic_async(
     previous_program: ColumnCleanerProgram,
     validation_issues: list[CleanerValidationIssue],
 ) -> CleanerRepairDiagnosis:
+    '''Async version of the critic call used in parallel generation mode.'''
+    # Create the same structured repair context used by the sync version.
     context = CleanerRepairContext(
         request=request,
         previous_program=previous_program,
         validation_issues=validation_issues,
     )
+    # Build the same critic prompt as the synchronous path.
     prompt = [
         (
             f"Diagnose the failed cleaner for dataset {dataset_name}, column {request.column_name}. "
@@ -243,22 +274,22 @@ async def run_cleaner_repair_critic_async(
         ),
         attach_profile_text(context),
     ]
+    # Run the critic asynchronously and return only its parsed output.
     result = await run_agent_with_backoff_async(cleaner_repair_critic_agent, prompt)
     return result.output
 
 
 def _build_stagnation_unblock_brief(request: ColumnCleaningRequest) -> str:
-    """Concrete rewrite skeleton injected when the generator is repeating itself.
-
-    Gives the model a non-negotiable structural template that puts canonical-value
-    preservation BEFORE any delimiter-based branching, and enforces mutually
-    exclusive branches so the shadowed-specific-branch check can never fire.
-    """
+    '''Builds a stronger repair brief used when the generator keeps repeating the same mistake.'''
+    # Collect a few dominant and outlier examples to show the model what must be preserved
+    # and what must be transformed in the next rewrite.
     dominants = [v for v in request.dominant_example_values if isinstance(v, str) and v]
     outliers = [v for v in request.example_inconsistent_values if isinstance(v, str) and v]
     dominant_str = ", ".join(repr(v) for v in dominants[:6]) or "(no dominant examples)"
     outlier_str = ", ".join(repr(v) for v in outliers[:6]) or "(no outliers)"
 
+    # Build a concrete code skeleton that forces safer control flow:
+    # first preserve canonical values, then handle outlier formats in exclusive branches.
     skeleton = (
         "def clean_column(value):\n"
         "    import re\n"
@@ -297,6 +328,8 @@ def _build_stagnation_unblock_brief(request: ColumnCleaningRequest) -> str:
         "    return None\n"
     )
 
+    # Return a detailed instruction block that explains why the rewrite is required
+    # and gives the model an explicit skeleton to follow.
     return (
         "STAGNATION OVERRIDE — your previous attempts repeated the same bug. "
         "You MUST abandon the previous control flow and rewrite around this skeleton. "
@@ -324,6 +357,8 @@ def _build_cleaner_generation_prompt(
     attempt_number: int | None = None,
     stagnation_detected: bool = False,
 ) -> list[object]:
+    '''Builds the generator prompt, optionally enriched with failures, critic advice, and stagnation guidance.'''
+    # Start with the base instruction and the structured cleaning request.
     prompt: list[object] = [
         (
             f"Generate and verify a pure Python cleaning function for dataset {dataset_name}, column {request.column_name}. "
@@ -335,6 +370,8 @@ def _build_cleaner_generation_prompt(
         attach_profile_text(request),
     ]
 
+    # Numeric columns need a special prompt because dominant examples do not define
+    # the full acceptance rule as strongly as they do for fixed-format strings.
     if request.target_dtype in {"Int64", "Float64"}:
         prompt.append(
             attach_text_document(
@@ -346,6 +383,7 @@ def _build_cleaner_generation_prompt(
             )
         )
 
+    # Add an extra rule set for columns that are specifically expected to contain month numbers.
     if request.expected_pattern.strip().lower() == "month number (1-12)":
         prompt.append(
             attach_text_document(
@@ -359,6 +397,8 @@ def _build_cleaner_generation_prompt(
             )
         )
 
+    # If a previous attempt failed, include the exact failures and the previous code
+    # so the next generation attempt can repair it more directly.
     if previous_program is not None and validation_issues:
         error_lines = "\n".join(f"- {format_validation_issue(issue)}" for issue in validation_issues[:20])
         concrete_examples = format_validation_examples(validation_issues, limit=8)
@@ -394,6 +434,7 @@ def _build_cleaner_generation_prompt(
                 ),
             ]
         )
+        # If the critic already diagnosed the failure, attach that diagnosis as a repair brief.
         if repair_diagnosis is not None:
             prompt.extend(
                 [
@@ -406,6 +447,7 @@ def _build_cleaner_generation_prompt(
                 ]
             )
 
+        # If the loop is stagnating, inject a stronger rewrite skeleton.
         if stagnation_detected:
             prompt.append(attach_text_document(_build_stagnation_unblock_brief(request)))
 
@@ -418,15 +460,7 @@ def run_column_cleaner_program(
     max_attempts: int = 10,
     on_event: ProgressCallback | None = None,
 ) -> ColumnCleanerProgram:
-    """Generator / critic / host-validator loop for a single column.
-
-    Per attempt:
-      1. Build the generator prompt (with failure context + optional stagnation brief).
-      2. Ask the generator agent for a self-contained cleaner program.
-      3. Validate the program host-side (no LLM).
-      4. If valid, return the verified program.
-      5. Otherwise: detect stagnation, invoke the critic, feed its diagnosis forward.
-    """
+    '''Runs the full generator, validator, and critic retry loop for one column.'''
     progress = _make_progress(on_event)
     previous_program: ColumnCleanerProgram | None = None
     validation_issues: list[CleanerValidationIssue] = []
@@ -434,10 +468,13 @@ def run_column_cleaner_program(
     last_fingerprint: tuple[str, ...] | None = None
     consecutive_stagnant = 0
 
+    # Try up to max_attempts times to get a cleaner that passes host-side validation.
     for attempt in range(1, max_attempts + 1):
+        # Once the loop starts repeating, enable the stagnation override behavior.
         stagnation = consecutive_stagnant >= 1
         progress.attempt_start(request.column_name, attempt, max_attempts, stagnation)
 
+        # Build the prompt using the latest request, failures, and critic guidance.
         prompt = _build_cleaner_generation_prompt(
             dataset_name, request,
             previous_program=previous_program,
@@ -446,25 +483,31 @@ def run_column_cleaner_program(
             attempt_number=attempt,
             stagnation_detected=stagnation,
         )
+        # When stagnation is detected, slightly increase temperature to encourage a different solution.
         model_settings = {"temperature": _stagnation_temperature(consecutive_stagnant)} if stagnation else None
         try:
+            # Ask the generator agent for one cleaner program.
             program = run_agent_with_backoff(
                 column_cleaner_generator_agent, prompt,
                 usage_limits=GENERATOR_USAGE_LIMITS,
                 model_settings=model_settings,
             ).output
         except UsageLimitExceeded as error:
+            # The prompt explicitly allows only one code-execution check inside the generator call.
             raise ValueError(
                 "Generator exceeded the one-code-execution limit. "
                 "This prevents hidden self-repair loops; simplify the prompt or raise the explicit limit if needed."
             ) from error
 
+        # Validate the generated cleaner locally without using another model.
         validation_issues = validate_generated_cleaner_program(request, program)
         if not validation_issues:
             progress.generator_accepted(request.column_name, attempt)
+            # Attach verified example transformations before returning the accepted program.
             return rebuild_verified_program(request, program)
         progress.validation_failed(request.column_name, attempt, max_attempts, validation_issues[0])
 
+        # Detect whether the model is stuck by comparing the code and the failure fingerprint.
         fingerprint = validation_issue_fingerprint(validation_issues)
         same_code = previous_program is not None and program.python_code.strip() == previous_program.python_code.strip()
         repeated_failure = last_fingerprint is not None and fingerprint == last_fingerprint
@@ -476,10 +519,12 @@ def run_column_cleaner_program(
             consecutive_stagnant = 0
         previous_program, last_fingerprint = program, fingerprint
 
+        # If attempts remain, ask the critic for a structured repair diagnosis.
         if attempt < max_attempts:
             progress.critic_started(request.column_name, len(validation_issues))
             repair_diagnosis = run_cleaner_repair_critic(dataset_name, request, program, validation_issues)
             progress.critic_diagnosis(request.column_name, repair_diagnosis)
+            # Stop early if the critic says another retry is not worthwhile.
             if not repair_diagnosis.should_retry:
                 failure_lines = "\n".join(f"- {format_validation_issue(issue)}" for issue in validation_issues[:10])
                 raise ValueError(
@@ -487,6 +532,7 @@ def run_column_cleaner_program(
                     f"{repair_diagnosis.root_cause}\n{failure_lines}"
                 )
 
+    # If all attempts fail, raise one final error containing the main validation problems.
     failure_lines = "\n".join(f"- {format_validation_issue(issue)}" for issue in validation_issues[:10])
     raise ValueError(
         f"Cleaner generation failed local validation for column '{request.column_name}' after {max_attempts} attempts:\n"
@@ -500,7 +546,7 @@ async def run_column_cleaner_program_async(
     max_attempts: int = 10,
     on_event: ProgressCallback | None = None,
 ) -> ColumnCleanerProgram:
-    """Async twin of run_column_cleaner_program with identical control flow."""
+    '''Async version of the single-column generation loop used for parallel workers.'''
     progress = _make_progress(on_event)
     previous_program: ColumnCleanerProgram | None = None
     validation_issues: list[CleanerValidationIssue] = []
@@ -508,6 +554,7 @@ async def run_column_cleaner_program_async(
     last_fingerprint: tuple[str, ...] | None = None
     consecutive_stagnant = 0
 
+    # The logic mirrors the synchronous version, but the model calls are awaited.
     for attempt in range(1, max_attempts + 1):
         stagnation = consecutive_stagnant >= 1
         progress.attempt_start(request.column_name, attempt, max_attempts, stagnation)
@@ -522,6 +569,7 @@ async def run_column_cleaner_program_async(
         )
         model_settings = {"temperature": _stagnation_temperature(consecutive_stagnant)} if stagnation else None
         try:
+            # Run the generator asynchronously so multiple columns can be processed in parallel.
             result = await run_agent_with_backoff_async(
                 column_cleaner_generator_agent, prompt,
                 usage_limits=GENERATOR_USAGE_LIMITS,
@@ -534,12 +582,14 @@ async def run_column_cleaner_program_async(
                 "This prevents hidden self-repair loops; simplify the prompt or raise the explicit limit if needed."
             ) from error
 
+        # Validate the generated program locally on the host.
         validation_issues = validate_generated_cleaner_program(request, program)
         if not validation_issues:
             progress.generator_accepted(request.column_name, attempt)
             return rebuild_verified_program(request, program)
         progress.validation_failed(request.column_name, attempt, max_attempts, validation_issues[0])
 
+        # Track repeated code or repeated failures to detect stagnation.
         fingerprint = validation_issue_fingerprint(validation_issues)
         same_code = previous_program is not None and program.python_code.strip() == previous_program.python_code.strip()
         repeated_failure = last_fingerprint is not None and fingerprint == last_fingerprint
@@ -551,6 +601,7 @@ async def run_column_cleaner_program_async(
             consecutive_stagnant = 0
         previous_program, last_fingerprint = program, fingerprint
 
+        # Ask the async critic for repair guidance before the next retry.
         if attempt < max_attempts:
             progress.critic_started(request.column_name, len(validation_issues))
             repair_diagnosis = await run_cleaner_repair_critic_async(
@@ -564,6 +615,7 @@ async def run_column_cleaner_program_async(
                     f"{repair_diagnosis.root_cause}\n{failure_lines}"
                 )
 
+    # If all retries are exhausted, raise the collected failure summary.
     failure_lines = "\n".join(f"- {format_validation_issue(issue)}" for issue in validation_issues[:10])
     raise ValueError(
         f"Cleaner generation failed local validation for column '{request.column_name}' after {max_attempts} attempts:\n"
@@ -579,11 +631,14 @@ def run_cleaner_generation(
     max_workers: int = 1,
     on_event: ProgressCallback | None = None,
 ) -> list[GeneratedCleanerArtifact]:
+    '''Runs cleaner generation for one or more columns, protected by a dataset-level lock.'''
+    # Validate user-controlled settings before starting any work.
     if max_attempts < 1:
         raise ValueError("max_attempts must be at least 1.")
     if max_workers < 1:
         raise ValueError("max_workers must be at least 1.")
 
+    # Protect the whole generation process so two runs do not write conflicting files.
     with _generation_lock(path):
         return _run_cleaner_generation_locked(path, reuse_consistency, column_name, max_attempts, max_workers, on_event)
 
@@ -596,6 +651,8 @@ async def _run_cleaner_generation_requests_async(
     max_workers: int,
     on_event: ProgressCallback | None = None,
 ) -> tuple[list[tuple[int, str, ColumnCleanerProgram]], list[str]]:
+    '''Runs multiple column-generation requests asynchronously and collects successes and failures.'''
+    # Limit how many async generation tasks run at the same time.
     semaphore = asyncio.Semaphore(max_workers)
 
     async def _run_one_cleaner(
@@ -603,7 +660,9 @@ async def _run_cleaner_generation_requests_async(
         request_column_name: str,
         request: ColumnCleaningRequest,
     ) -> tuple[int, str, ColumnCleanerProgram | None, ValueError | None]:
+        '''Runs the async single-column loop for one request inside the shared semaphore.'''
         async with semaphore:
+            # Log a short progress line showing which column is entering the sandbox loop.
             print(
                 f"\n[generate] '{request_column_name}' - {len(request.example_inconsistent_values)} outlier examples -> sandbox...",
                 file=sys.stderr,
@@ -613,19 +672,23 @@ async def _run_cleaner_generation_requests_async(
                 f"[{idx}/{total_columns}] '{request_column_name}' - {len(request.example_inconsistent_values)} outlier examples",
             )
             try:
+                # Generate and validate a cleaner for this single column.
                 program = await run_column_cleaner_program_async(
                     path.stem, request, max_attempts=max_attempts, on_event=on_event
                 )
             except ValueError as error:
+                # Return the failure instead of raising so the other tasks can continue.
                 return idx, request_column_name, None, error
             return idx, request_column_name, program, None
 
+    # Create one async task per requested column.
     tasks = [
         asyncio.create_task(_run_one_cleaner(idx, request_column_name, request))
         for idx, request_column_name, request in generation_requests
     ]
     completed_results: list[tuple[int, str, ColumnCleanerProgram]] = []
     failed_columns: list[str] = []
+    # Consume the tasks as they finish so progress is reported incrementally.
     for task in asyncio.as_completed(tasks):
         idx, request_column_name, program, error = await task
         if error is not None:
@@ -647,17 +710,22 @@ def _run_cleaner_generation_locked(
     max_workers: int,
     on_event: ProgressCallback | None = None,
 ) -> list[GeneratedCleanerArtifact]:
+    '''Performs the full generation workflow once the dataset lock has been acquired.'''
+    # Load consistency findings and the raw dataset data needed to build requests.
     consistency = run_format_consistency_validation(path, reuse_cache=reuse_consistency)
     df = load_dataset_frame(path)
     artifacts: list[GeneratedCleanerArtifact] = []
 
+    # Try to load schema metadata so dtype and role hints can be added to each request.
     schema_map = {}
     try:
         handoff = load_schema_handoff(path)
         schema_map = {column.name: column for column in handoff.columns}
     except FileNotFoundError:
+        # Schema hints are optional, so continue even if the handoff file does not exist.
         pass
 
+    # If the user asked for a single column, filter the findings to that column only.
     requested_column_name = column_name
     findings = consistency.format_consistency_findings
     if requested_column_name is not None:
@@ -671,12 +739,15 @@ def _run_cleaner_generation_locked(
 
     failed_columns: list[str] = []
     total_columns = len(findings)
+    # Notify the caller how many columns will be processed.
     _emit(on_event, f"{total_columns} column{'s' if total_columns != 1 else ''} to synthesize")
 
+    # If parallel work is enabled and there is more than one column, prepare all requests first.
     if max_workers > 1 and len(findings) > 1:
         generation_requests: list[tuple[int, str, ColumnCleaningRequest]] = []
         for idx, finding in enumerate(findings, start=1):
             request_column_name = finding.column_name
+            # Build the request bundle that the generator agent will use for this column.
             format_facts = build_column_format_facts(df, request_column_name)
             schema_entry = schema_map.get(request_column_name)
             request = build_column_cleaning_request(
@@ -688,12 +759,14 @@ def _run_cleaner_generation_locked(
             )
             generation_requests.append((idx, request_column_name, request))
 
+        # Do not create more workers than there are actual requests.
         worker_count = min(max_workers, len(generation_requests))
         print(
             f"\n[generate] running {len(generation_requests)} cleaner generators with {worker_count} async workers",
             file=sys.stderr,
         )
         _emit(on_event, f"running cleaner generators with {worker_count} async workers")
+        # Run the async batch and collect both successes and failures.
         completed_results, parallel_failed_columns = asyncio.run(
             _run_cleaner_generation_requests_async(
                 path,
@@ -706,6 +779,7 @@ def _run_cleaner_generation_locked(
         )
         failed_columns.extend(parallel_failed_columns)
 
+        # Save each successfully generated cleaner in the original column order.
         for _idx, generated_column_name, program in sorted(completed_results, key=lambda item: item[0]):
             code_path = save_generated_cleaner(path, program)
             print(f"  saved: {code_path}", file=sys.stderr)
@@ -727,10 +801,13 @@ def _run_cleaner_generation_locked(
                 )
             )
 
+        # Clear findings so the sequential loop below does not re-run the same columns.
         findings = []
 
+    # Process any remaining columns sequentially.
     for idx, finding in enumerate(findings, start=1):
         column_name = finding.column_name
+        # Build the request bundle for this column using format facts and optional schema hints.
         format_facts = build_column_format_facts(df, column_name)
         schema_entry = schema_map.get(column_name)
         request = build_column_cleaning_request(path.stem, column_name, finding, format_facts, schema_entry)
@@ -744,14 +821,17 @@ def _run_cleaner_generation_locked(
             f"[{idx}/{total_columns}] '{column_name}' — {len(request.example_inconsistent_values)} outlier examples",
         )
         try:
+            # Run the full single-column generator / validator / critic loop.
             program = run_column_cleaner_program(
                 path.stem, request, max_attempts=max_attempts, on_event=on_event
             )
         except ValueError as error:
+            # Keep the failure and continue with the remaining columns.
             failed_columns.append(f"{column_name}: {error}")
             print(f"  FAILED - {error}", file=sys.stderr)
             _emit(on_event, f"  ✗ '{column_name}' failed: {str(error)[:120]}")
             continue
+        # Save the verified cleaner program to disk.
         code_path = save_generated_cleaner(path, program)
 
         print(f"  saved: {code_path}", file=sys.stderr)
@@ -770,11 +850,13 @@ def _run_cleaner_generation_locked(
                 changed_rows=0,
                 summary=program.verification_summary,
                 example_transformations=list(program.example_transformations),
+                )
             )
-        )
 
+    # If the user requested one specific column and it failed, raise immediately with that failure.
     if failed_columns and requested_column_name is not None:
         raise ValueError(f"Cleaner generation failed for requested column {requested_column_name!r}: {failed_columns[0]}")
+    # If everything failed and no artifact was created, raise a combined failure summary.
     if failed_columns and not artifacts:
         joined_failures = "\n".join(f"- {failure}" for failure in failed_columns)
         raise ValueError(
@@ -783,6 +865,7 @@ def _run_cleaner_generation_locked(
             f"{joined_failures}"
         )
 
+    # Save the manifest describing all generated cleaner artifacts.
     save_cleaner_manifest(path, artifacts)
     print(f"\n[generate] manifest saved -> {cleaner_manifest_path(path)}", file=sys.stderr)
     return artifacts
