@@ -304,6 +304,13 @@ def detect_duplicate_semantic_conflicts(df: pd.DataFrame, duplicate_groups: list
             & ~left_norm.isin(PLACEHOLDER_TOKENS)
             & ~right_norm.isin(PLACEHOLDER_TOKENS)
         )
+        comparable_count = int(comparable.sum())
+        if comparable_count == 0:
+            continue
+
+        agreement = comparable & left_norm.eq(right_norm)
+        agreement_count = int(agreement.sum())
+        similarity_pct = round((agreement_count / comparable_count) * 100, 2)
         mismatch_mask = comparable & left_norm.ne(right_norm)
         mismatch_indices = list(df.index[mismatch_mask])
         if not mismatch_indices:
@@ -316,9 +323,11 @@ def detect_duplicate_semantic_conflicts(df: pd.DataFrame, duplicate_groups: list
                 "severity": "high",
                 "affected_rows": len(mismatch_indices),
                 "example_row_indices": mismatch_indices[:8],
+                "similarity_pct": similarity_pct,
                 "evidence": (
                     f"Columns {left!r} and {right!r} normalize to the same schema name but disagree on "
-                    f"{len(mismatch_indices)} rows where both values are present."
+                    f"{len(mismatch_indices)} of {comparable_count} rows where both values are present "
+                    f"({similarity_pct:.2f}% similarity)."
                 ),
                 "suggested_action": (
                     "Review whether one column should override the other, whether they need reconciliation rules, or whether both must be preserved separately."
