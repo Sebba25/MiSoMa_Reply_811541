@@ -1,20 +1,19 @@
 """Cross-cutting helpers shared by the specialised ``tools/*`` modules.
 
-Groups four concerns:
-    * placeholder token list + attachment helpers for agent prompts
-    * numeric/datetime parse-rate and value-shape primitives
-    * schema pattern matchers used by the cleaner validator
-    * ``run_agent_with_backoff``: the single retrying entrypoint used by every
-      pydantic-ai agent call in the pipeline
+This module centralizes four kinds of reusable primitives:
+    * placeholder-token and attachment helpers for agent prompts
+    * numeric/datetime parse-rate and value-shape utilities used by profiling
+    * schema-pattern matchers used by the cleaner validator
+    * retrying agent runners plus verbose terminal tracing for pydantic-ai calls
 
-Nothing here talks to the agents directly — only pandas, pydantic, and the
-pydantic-ai runtime types.
+Nothing here contains stage-specific business logic; it exists to keep the
+specialized tool modules small and consistent.
 """
 
 from __future__ import annotations
 
-import base64
 import asyncio
+import base64
 import gzip
 import json
 import os
@@ -46,29 +45,35 @@ PLACEHOLDER_TOKENS = ("", "na", "n/a", "null", "none", "-", "--", "unknown", "n.
 # Shared Attachment And I/O Helpers
 
 def attach_text_document(text: str) -> BinaryContent:
+    """Wrap plain text as a BinaryContent document for pydantic-ai prompts."""
     return BinaryContent(data=text.encode("utf-8"), media_type="text/plain")
 
 
 def attach_profile_text(profile: BaseModel) -> BinaryContent:
+    """Serialize a Pydantic model to JSON and attach it as a text document."""
     return attach_text_document(profile.model_dump_json(indent=2))
 
 
 def load_dataset_frame(path: Path, dtype: str | dict | None = None) -> pd.DataFrame:
+    """Load one CSV dataset into a pandas DataFrame with an optional dtype override."""
     return pd.read_csv(path, dtype=dtype)
 
 
 # Shared Encoding Helpers
 
 def gzip_text_to_base64(text: str) -> str:
+    """Compress text with gzip and return an ASCII-safe base64 string."""
     return base64.b64encode(gzip.compress(text.encode("utf-8"))).decode("ascii")
 
 
 # Shared Profiling Helpers
 
 def sample_non_null_values(series: pd.Series, limit: int = 5) -> list[str]:
+    """Collect a few distinct rendered non-null values from a series."""
     values: list[str] = []
     for value in series.dropna():
         rendered = str(value).strip()
+        # Skip blanks and preserve first-seen order so prompt examples stay intuitive.
         if not rendered or rendered in values:
             continue
         values.append(rendered[:80])
@@ -78,6 +83,11 @@ def sample_non_null_values(series: pd.Series, limit: int = 5) -> list[str]:
 
 
 def value_shape(value: str) -> str:
+    """Convert a value into its structural shape signature.
+
+    Digits become ``9``, letters become ``A``, and punctuation is preserved,
+    so values with the same layout map to the same canonical shape.
+    """
     parts: list[str] = []
     for char in value:
         if char.isdigit():
@@ -90,6 +100,7 @@ def value_shape(value: str) -> str:
 
 
 def compute_numeric_parse_pct(series: pd.Series) -> float:
+    """Return the percentage of non-empty rendered values parseable as numeric."""
     non_null = series.dropna()
     if non_null.empty:
         return 0.0
@@ -102,6 +113,11 @@ def compute_numeric_parse_pct(series: pd.Series) -> float:
 
 
 def compute_datetime_parse_pct(series: pd.Series) -> float:
+    """Return the percentage of rendered values that look and parse like datetimes.
+
+    A lightweight signal mask is applied first so arbitrary text is not sent
+    wholesale into pandas datetime parsing.
+    """
     non_null = series.dropna()
     if non_null.empty:
         return 0.0
@@ -110,6 +126,7 @@ def compute_datetime_parse_pct(series: pd.Series) -> float:
     if rendered.empty:
         return 0.0
 
+    # Pre-filter to strings with obvious date/time cues before asking pandas to parse them.
     signal_mask = (
         rendered.str.contains(r"\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}", regex=True)
         | rendered.str.contains(r"\d{4}-\d{2}-\d{2}T\d", regex=True)
@@ -125,6 +142,7 @@ def compute_datetime_parse_pct(series: pd.Series) -> float:
 
 
 def compute_empty_like_pct(series: pd.Series) -> float:
+    """Return the share of rows that are null-like or placeholder-like."""
     if series.empty:
         return 0.0
     rendered = series.fillna("").astype(str).str.strip().str.lower()
@@ -133,10 +151,12 @@ def compute_empty_like_pct(series: pd.Series) -> float:
 
 
 def _normalized_pattern(pattern: str | None) -> str:
+    """Normalize an optional pattern label for case-insensitive comparisons."""
     return (pattern or "").strip().lower()
 
 
 def _matches_generic_digit_count(value: str, pattern: str) -> bool | None:
+    """Match schema phrases such as ``4-digit`` or ``6-digit`` when present."""
     match = re.search(r"(\d+)-digit", pattern)
     if not match:
         return None
@@ -151,12 +171,18 @@ def matches_numeric_schema_pattern(
     numeric_role: str | None = None,
     detected_pattern: str | None = None,
 ) -> bool | None:
+    """Check whether one rendered value matches the schema's numeric pattern contract.
+
+    Returns True/False when the current schema metadata is specific enough to make
+    a decision, and None when the metadata does not define a concrete pattern.
+    """
     stripped = value.strip()
     if not stripped:
         return False
 
     pattern = _normalized_pattern(detected_pattern)
 
+    # Handle explicit semantic patterns first before falling back to dtype/role-based defaults.
     if pattern == "month number (1-12)":
         return bool(re.fullmatch(r"(?:[1-9]|1[0-2])", stripped))
 
@@ -192,8 +218,10 @@ def numeric_pattern_allows_variable_width(
     numeric_role: str | None = None,
     detected_pattern: str | None = None,
 ) -> bool:
+    """Return True when the numeric schema contract allows values of varying width."""
     pattern = _normalized_pattern(detected_pattern)
 
+    # Fixed-width temporal codes and explicit N-digit patterns must preserve shape exactly.
     if pattern in {"4-digit year", "yyyymm"}:
         return False
 
@@ -218,6 +246,7 @@ def numeric_pattern_allows_variable_width(
 # Agent Runtime Helpers
 
 def parse_retry_after_seconds(message: str, attempt: int) -> float:
+    """Extract provider retry timing from an error message, else fall back to exponential backoff."""
     match = re.search(r"Please try again in ([0-9.]+)s", message)
     if match:
         return float(match.group(1)) + 0.5
@@ -225,21 +254,25 @@ def parse_retry_after_seconds(message: str, attempt: int) -> float:
 
 
 def _verbose_agent_runs_enabled() -> bool:
+    """Return True when terminal-level agent event tracing is enabled via env var."""
     return os.getenv("AGENT_VERBOSE", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _render_tool_args(args: object, limit: int = 400) -> str:
+    """Render tool arguments into a single trimmed string for stderr logging."""
     rendered = str(args)
     return rendered if len(rendered) <= limit else rendered[: limit - 3] + "..."
 
 
 def _render_tool_result_content(content: object, limit: int = 400) -> str:
+    """Render tool results into a compact single-line stderr preview."""
     rendered = str(content)
     rendered = " ".join(rendered.split())
     return rendered if len(rendered) <= limit else rendered[: limit - 3] + "..."
 
 
 def _merge_tool_args(existing: object, delta: object) -> object:
+    """Merge streaming tool-call argument deltas into one reconstructed payload."""
     if delta is None:
         return existing
     if existing is None:
@@ -258,6 +291,7 @@ def _merge_tool_args(existing: object, delta: object) -> object:
 
 
 def _format_multiline_block(text: str, *, max_lines: int = 20, max_chars: int = 1200) -> str:
+    """Indent and truncate multiline content for readable terminal logging."""
     trimmed = text[:max_chars]
     lines = trimmed.splitlines()
     visible = lines[:max_lines]
@@ -268,8 +302,10 @@ def _format_multiline_block(text: str, *, max_lines: int = 20, max_chars: int = 
 
 
 def _render_tool_call_message(tool_name: str, args: object) -> str:
+    """Pretty-print one tool call for verbose stderr traces."""
     if isinstance(args, dict):
         if tool_name == "code_execution":
+            # Code-execution calls are rendered specially so the generated code block stays readable.
             meta = {k: v for k, v in args.items() if k != "code"}
             parts = [tool_name]
             if meta:
@@ -290,6 +326,11 @@ def _render_tool_call_message(tool_name: str, args: object) -> str:
 
 
 def build_terminal_event_stream_handler(agent_name: str):
+    """Build an async event handler that streams pydantic-ai activity to stderr.
+
+    This is only used in verbose mode to make agent thinking, tool calls, and
+    final outputs inspectable while debugging the orchestration pipeline.
+    """
     state = {"open_section": None, "tool_parts": {}}
 
     def _close_open_section() -> None:
@@ -317,6 +358,7 @@ def build_terminal_event_stream_handler(agent_name: str):
                     state["open_section"] = "thinking"
                 elif part_kind == "tool-call":
                     _close_open_section()
+                    # Tool-call parts may stream their args incrementally, so keep mutable per-part state.
                     state["tool_parts"][event.index] = {
                         "kind": "tool-call",
                         "tool_name": getattr(event.part, "tool_name", "unknown"),
@@ -377,6 +419,7 @@ def build_terminal_event_stream_handler(agent_name: str):
                     if part_state is not None:
                         tool_name = part_state.get("tool_name", tool_name)
                         args = part_state.get("args", args)
+                    # Emit the fully reconstructed tool call once the streaming part is complete.
                     print(
                         f"[{agent_name}][{part_kind}-args] {_render_tool_call_message(tool_name, args)}",
                         file=sys.stderr,
@@ -418,6 +461,7 @@ def run_agent_with_backoff(
     usage_limits: UsageLimits | None = None,
     model_settings: dict | None = None,
 ):
+    """Run one agent synchronously with retries for rate limits and connection issues."""
     for attempt in range(max_attempts):
         try:
             event_stream_handler = None
@@ -433,6 +477,7 @@ def run_agent_with_backoff(
                 run_kwargs["model_settings"] = model_settings
             return agent.run_sync(prompt, **run_kwargs)
         except ModelHTTPError as error:
+            # Retry only HTTP 429 rate limits; other HTTP failures should surface immediately.
             if error.status_code != 429 or attempt == max_attempts - 1:
                 raise
             body_message = ""
@@ -444,10 +489,11 @@ def run_agent_with_backoff(
                     f"[{getattr(agent, 'name', None) or 'agent'}] retrying after HTTP 429 in {wait_seconds:.1f}s",
                     file=sys.stderr,
                     flush=True,
-            )
+                )
             time.sleep(wait_seconds)
         except ModelAPIError as error:
             message = str(error)
+            # Transport-level connection failures are retriable; semantic/API errors are not.
             is_connection_issue = "Connection error" in message or "connection" in message.lower()
             if not is_connection_issue or attempt == max_attempts - 1:
                 raise
@@ -468,6 +514,7 @@ async def run_agent_with_backoff_async(
     usage_limits: UsageLimits | None = None,
     model_settings: dict | None = None,
 ):
+    """Async variant of ``run_agent_with_backoff`` with identical retry policy."""
     for attempt in range(max_attempts):
         try:
             event_stream_handler = None
