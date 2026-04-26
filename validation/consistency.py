@@ -364,7 +364,7 @@ async def run_column_format_check_async(
     schema_entry: SchemaColumnEntry | None = None,
 ) -> ColumnConsistencyReport:
     """Async version of run_column_format_check, used when columns are checked in parallel."""
-    # Skip columns whose role indicates free-form content where format variation is expected
+    # Free-form roles legitimately vary in shape — skip before any profiling
     if schema_entry is not None and schema_entry.string_role in ("name", "free_text"):
         return ColumnConsistencyReport(
             finding=None,
@@ -374,7 +374,9 @@ async def run_column_format_check_async(
             ),
         )
 
+    # Pure pandas profile: dominant shape, coverage %, outlier examples, candidate flag
     format_facts = build_column_format_facts(df, column_name)
+    # Bail out if the column isn't machine-format-like or every row already matches the dominant shape
     if not format_facts.machine_format_candidate or format_facts.inconsistent_rows <= 0:
         return ColumnConsistencyReport(
             finding=None,
@@ -384,21 +386,25 @@ async def run_column_format_check_async(
             ),
         )
 
-    # Fast path: schema already identified the dominant pattern - no LLM needed.
+    # Fast path: unambiguous schema pattern lets us build the finding deterministically, no LLM needed
     if (
         schema_entry is not None
         and schema_entry.detected_pattern
         and not _schema_pattern_is_ambiguous(schema_entry.detected_pattern)
     ):
+        # Default to shape-based outliers from the profiler
         inconsistent_rows = format_facts.inconsistent_rows
         inconsistent_example_profiles = format_facts.inconsistent_examples
         used_schema_override = False
 
+        # For numeric columns, validate against the schema pattern directly (more precise than shape matching)
         guided_profile = _profile_schema_guided_inconsistencies(df, column_name, schema_entry)
         if guided_profile is not None:
+            # Numeric override: schema-guided counts replace shape-based ones
             inconsistent_rows, inconsistent_example_profiles = guided_profile
             used_schema_override = True
 
+        # Schema-guided check can clear rows that shape-based profiling flagged — handle the empty case
         if inconsistent_rows <= 0:
             return ColumnConsistencyReport(
                 finding=None,
@@ -408,13 +414,16 @@ async def run_column_format_check_async(
                 ),
             )
 
+        # Strip FormatOutlierExample wrappers down to plain string values for the finding payload
         inconsistent_examples = [ex.value for ex in inconsistent_example_profiles]
+        # Default evidence: shape-based deviation from the dominant shape
         evidence = (
             f"Schema handoff identified dominant pattern '{schema_entry.detected_pattern}'. "
             f"Profiler found {inconsistent_rows} rows deviating from the "
             f"dominant shape '{format_facts.dominant_shape}' "
             f"({format_facts.dominant_shape_pct:.1f}% of non-null rows match the dominant shape)."
         )
+        # Override evidence wording when numeric-pattern matching drove the count instead of shape comparison
         if used_schema_override:
             evidence = (
                 f"Schema handoff identified target dtype '{schema_entry.pandas_dtype}' and pattern "
@@ -429,6 +438,7 @@ async def run_column_format_check_async(
                 inconsistent_rows=inconsistent_rows,
                 example_inconsistent_values=inconsistent_examples,
                 evidence=evidence,
+                # suggested_strategy becomes the cleaner generator's contract; the variable-width flag relaxes equal-length output for domains like month numbers
                 suggested_strategy=_build_suggested_strategy(
                     schema_entry.detected_pattern,
                     format_facts.dominant_shape,
@@ -447,13 +457,14 @@ async def run_column_format_check_async(
             ),
         )
 
-    # Include dtype and role in the prompt as hints when the schema entry exists
+    # Slow path: no usable schema pattern — assemble a dtype/role hint to anchor the agent
     schema_context = ""
     if schema_entry is not None:
         schema_context = (
             f" Target dtype: {schema_entry.pandas_dtype}."
             f" Semantic role: {schema_entry.numeric_role or schema_entry.string_role or 'unknown'}."
         )
+    # Prompt = textual instruction + ColumnFormatFacts attached as a plain-text BinaryContent blob
     prompt = [
         (
             f"Analyze the attached ColumnFormatFacts for dataset '{dataset_name}', column '{column_name}'."
@@ -467,17 +478,19 @@ async def run_column_format_check_async(
         ),
         attach_profile_text(format_facts),
     ]
+    # Verbose-mode breadcrumb so each agent invocation is visible in stderr
     print(
         f"[orchestrator][consistency][format-agent] dataset='{dataset_name}' column='{column_name}'",
         file=sys.stderr,
         flush=True,
     )
+    # _async wrapper handles 429/5xx exponential backoff — essential under concurrent fan-out
     result = await run_agent_with_backoff_async(format_consistency_agent, prompt)
     output = result.output
-    # Discard findings where the agent reported zero inconsistent rows
+    # Defensive guard: agent contradicts itself with finding + zero inconsistent rows
     if output.finding is not None and output.finding.inconsistent_rows <= 0:
         return ColumnConsistencyReport(finding=None, summary=output.summary)
-    # Normalise the expected_pattern if the agent returned a vague or multi-valued description
+    # Replace hedged patterns ("YYYY-MM or YYYYMM") with a safe canonical fallback; rebuild via model_copy since Pydantic models are immutable
     if output.finding is not None:
         normalized_pattern = _normalize_expected_pattern(output.finding.expected_pattern, format_facts)
         if normalized_pattern != output.finding.expected_pattern:
@@ -495,9 +508,11 @@ async def _run_column_format_checks_async(
     max_workers: int,
 ) -> list[ColumnConsistencyReport]:
     """Run format checks for all columns concurrently, bounded by the semaphore to limit parallelism."""
+    # Cap concurrent agent calls so wide tables don't fire dozens of LLM requests at once
     semaphore = asyncio.Semaphore(max_workers)
 
     async def _run_one(index: int, column_name: str) -> tuple[int, ColumnConsistencyReport]:
+        # Acquire a slot before running; queued tasks wait here without consuming an LLM connection
         async with semaphore:
             report = await run_column_format_check_async(
                 df,
@@ -506,16 +521,17 @@ async def _run_column_format_checks_async(
                 "original validation",
                 schema_entry=schema_map.get(column_name),
             )
-            # Return the index alongside the report so results can be reordered after completion
+            # Carry the index back so as_completed results can be reordered later
             return index, report
 
+    # Schedule one task per column; the semaphore inside _run_one throttles real concurrency
     tasks = [asyncio.create_task(_run_one(index, column_name)) for index, column_name in enumerate(column_names)]
     reports_by_index: dict[int, ColumnConsistencyReport] = {}
-    # Collect results as they complete rather than in submission order
+    # as_completed yields fastest-first, not submission order — store by index so we can sort later
     for task in asyncio.as_completed(tasks):
         index, report = await task
         reports_by_index[index] = report
-    # Restore the original column order before returning
+    # Rebuild the list in original column order so the caller's downstream logic stays positional
     return [reports_by_index[index] for index in range(len(column_names))]
 
 def run_format_consistency_validation(path: Path, reuse_cache: bool = False, read_as_str: bool = False, max_workers: int = 1) -> ConsistencyValidationReport:
