@@ -13,9 +13,9 @@ import re
 import sys
 from pathlib import Path
 
-from agents import dtype_inference_agent, schema_summary_agent
-from cache import load_schema_handoff, save_schema_handoff
-from models import DatasetDtypeInference, SchemaColumnEntry, SchemaHandoff, SchemaIssue
+from core.agents import dtype_inference_agent, schema_summary_agent
+from core.cache import load_schema_handoff, save_schema_handoff
+from core.models import DatasetDtypeInference, SchemaColumnEntry, SchemaHandoff, SchemaIssue
 from tools import (SchemaDuplicateGroup,
     attach_profile_text, attach_text_document,
     build_dataset_profile,build_dtype_inference_text,
@@ -65,6 +65,50 @@ def _parse_numeric_samples(sample_values: list[str]) -> tuple[list[int], bool]:
             continue
     return ints, saw_decimal
 
+
+def _infer_year_width_pattern(column_name: str, sample_values: list[str]) -> str | None:
+    """Infer a fixed-width year pattern for anno/year columns from predominant samples.
+
+    Year-like columns often contain a mixture of canonical values (for example
+    ``2023``) and abbreviated variants (for example ``23``). For these columns
+    we want the schema contract to follow the predominant width instead of
+    falling back to a generic ``integer code`` label that would accept both.
+    """
+    # Only anno/year-like columns are eligible for this stricter year-width inference.
+    tokens = set(normalized_schema_name(column_name).split("_"))
+    if not ({"anno", "year"} & tokens):
+        return None
+
+    # Count how often 2-digit and 4-digit year tokens appear across the samples.
+    width_counts: dict[int, int] = {}
+    for raw in sample_values:
+        # Normalize each sample to a stripped string before looking for year-like digit groups.
+        value = str(raw).strip()
+        if not value:
+            continue
+
+        # Extract standalone 2-digit or 4-digit integer tokens such as "23", "2024",
+        # or the numeric part of strings like "anno 2023".
+        for match in re.finditer(r"(?<!\d)(\d{2}|\d{4})(?!\d)", value):
+            digits = match.group(1)
+            width = len(digits)
+            # Accept plausible 4-digit Gregorian years or generic 2-digit abbreviations.
+            # The goal is not to validate the final cleaned output here, only to infer
+            # whether the dominant contract in the raw data is year-width 2 or 4.
+            if width == 4 and 1900 <= int(digits) <= 2100:
+                width_counts[4] = width_counts.get(4, 0) + 1
+            elif width == 2:
+                width_counts[2] = width_counts.get(2, 0) + 1
+
+    if not width_counts:
+        return None
+
+    # Prefer the most frequent width; on ties, keep the stricter 4-digit contract
+    # so columns that are mostly canonical years do not get downgraded accidentally.
+    predominant_width = max(width_counts.items(), key=lambda item: (item[1], item[0]))[0]
+    return "4-digit year" if predominant_width == 4 else "2-digit year"
+
+
 def _infer_numeric_pattern(column_name: str, sample_values: list[str], numeric_role: str | None) -> str:
     """Infer a single canonical pattern name for a numeric column when the agent's output is absent or ambiguous.
 
@@ -88,6 +132,12 @@ def _infer_numeric_pattern(column_name: str, sample_values: list[str], numeric_r
     # If values are in the 1900-2100 range and the column name contains a year keyword, treat as year
     if ints and all(1900 <= value <= 2100 for value in ints[:10]) and ({"anno", "year"} & tokens):
         return "4-digit year"
+
+    # For anno/year columns with mixed values such as 2023 plus 23, follow the
+    # predominant year width instead of accepting a generic integer code.
+    year_width_pattern = _infer_year_width_pattern(column_name, rendered_samples)
+    if year_width_pattern is not None:
+        return year_width_pattern
 
     # Check for the compact YYYYMM period key format
     if rendered_samples and all(

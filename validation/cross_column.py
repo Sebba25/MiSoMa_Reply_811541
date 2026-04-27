@@ -11,9 +11,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from agents import cross_column_summary_agent
-from cache import load_cross_column, load_schema_handoff, save_cross_column
-from models import CrossColumnFinding, CrossColumnValidationReport
+from core.agents import cross_column_summary_agent
+from core.cache import load_cross_column, load_schema_handoff, save_cross_column
+from core.models import CrossColumnFinding, CrossColumnValidationReport
 from tools import (
     detect_date_order_violations,
     detect_duplicate_like_columns,

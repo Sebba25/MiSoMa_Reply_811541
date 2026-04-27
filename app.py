@@ -13,8 +13,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from agents import setup_logfire
-from cache import load_validation_results
+from core.agents import setup_logfire
+from core.cache import load_validation_results
 from cleaning.orchestrator import (
     _build_cleaning_requests,
     _resolve_remediation_plan,
@@ -30,7 +30,7 @@ from cleaning.reporting import (
 from cleaning.verification import run_verify
 from cleaning.application import run_cleaner_application_with_plan
 from cleaning.generation import run_cleaner_generation
-from models import FinalPipelineReport
+from core.models import FinalPipelineReport
 from validation import (
     build_validation_results,
     run_anomaly_detection,
@@ -1612,6 +1612,19 @@ def view_pipeline() -> None:
         )
         if st.session_state.pipeline_running:
             run_label = "Pipeline running…"
+            st.markdown(
+                """<style>
+                .stButton > button[kind="primary"]:disabled,
+                .stButton > button[data-testid="baseButton-primary"]:disabled {
+                    background: #e8896e !important;
+                    color: #fff !important;
+                    border: 1px solid #d4715a !important;
+                    box-shadow: none !important;
+                    cursor: wait !important;
+                }
+                </style>""",
+                unsafe_allow_html=True,
+            )
         elif st.session_state.pipeline_done:
             run_label = "Pipeline complete ✓"
         elif st.session_state.dataset_path is None:

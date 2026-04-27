@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from models import ColumnCleaningRequest
+from core.models import ColumnCleaningRequest
 
 #This defines a helper function that returns the expected datetime pattern as a string
 def _build_datetime_expected_pattern(format_facts: Any, fallback_pattern: str) -> str:

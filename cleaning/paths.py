@@ -11,8 +11,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from models import ColumnCleanerProgram, GeneratedCleanerArtifact
-#It is the real runtime executor that applies generated cleaning logic to a whole dataframe column and records what happened
+from core.models import ColumnCleanerProgram, GeneratedCleanerArtifact
 from tools import normalized_schema_name 
 
 

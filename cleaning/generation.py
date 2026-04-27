@@ -23,9 +23,9 @@ import sys
 from contextlib import contextmanager
 from typing import Callable
 
-from agents import cleaner_repair_critic_agent, column_cleaner_generator_agent
-from cache import load_schema_handoff
-from models import (
+from core.agents import cleaner_repair_critic_agent, column_cleaner_generator_agent
+from core.cache import load_schema_handoff
+from core.models import (
     CleanerRepairContext,
     CleanerRepairDiagnosis,
     CleanerValidationIssue,
@@ -198,11 +198,6 @@ class _GenerationProgress:
             )
     #It gives concrete examples of what the critic wants changed
 
-
-def _make_progress(on_event: ProgressCallback | None) -> _GenerationProgress:
-    '''Creates the default progress reporter used by the generation loop.'''
-    return _GenerationProgress(on_event)
-#Create the progress reporter and return it. It centralizes creation of the default progress reporter
 
 #This decorator turns the function into a context manager, so it can be used with with.
 @contextmanager
@@ -524,7 +519,7 @@ def run_column_cleaner_program(
     on_event: ProgressCallback | None = None,
 ) -> ColumnCleanerProgram:
     '''Runs the full generator, validator, and critic retry loop for one column.'''
-    progress = _make_progress(on_event) #Create the progress reporter
+    progress = _GenerationProgress(on_event)
     previous_program: ColumnCleanerProgram | None = None #At first there is no previous program
     validation_issues: list[CleanerValidationIssue] = [] #Start with no validation issues
     repair_diagnosis: CleanerRepairDiagnosis | None = None #At first there is no critic diagnosis
@@ -630,7 +625,7 @@ async def run_column_cleaner_program_async(
     on_event: ProgressCallback | None = None,
 ) -> ColumnCleanerProgram:
     '''Async version of the single-column generation loop used for parallel workers.'''
-    progress = _make_progress(on_event)
+    progress = _GenerationProgress(on_event)
     previous_program: ColumnCleanerProgram | None = None
     validation_issues: list[CleanerValidationIssue] = []
     repair_diagnosis: CleanerRepairDiagnosis | None = None

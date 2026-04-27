@@ -189,6 +189,11 @@ def matches_numeric_schema_pattern(
     if pattern == "4-digit year":
         return bool(re.fullmatch(r"\d{4}", stripped))
 
+    # Two-digit year contracts are intentionally fixed-width as well, so values
+    # such as "3" or "2023" do not count as valid when the schema expects "23".
+    if pattern == "2-digit year":
+        return bool(re.fullmatch(r"\d{2}", stripped))
+
     if pattern == "yyyymm":
         return bool(re.fullmatch(r"\d{6}", stripped)) and 1 <= int(stripped[4:6]) <= 12
 
@@ -222,7 +227,9 @@ def numeric_pattern_allows_variable_width(
     pattern = _normalized_pattern(detected_pattern)
 
     # Fixed-width temporal codes and explicit N-digit patterns must preserve shape exactly.
-    if pattern in {"4-digit year", "yyyymm"}:
+    # Year and YYYYMM contracts are fixed-width temporal codes, so the cleaner
+    # validator must enforce one exact visible shape instead of allowing width drift.
+    if pattern in {"2-digit year", "4-digit year", "yyyymm"}:
         return False
 
     if re.search(r"(\d+)-digit", pattern):

@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from cache import load_remediation_plan, load_validation_results, save_remediation_plan
-from models import OrchestrationStepResult, RemediationAction, RemediationPlan, SchemaColumnEntry
+from core.cache import load_remediation_plan, load_validation_results, save_remediation_plan
+from core.models import OrchestrationStepResult, RemediationAction, RemediationPlan, SchemaColumnEntry
 from validation import build_validation_results
 from tools import normalized_schema_name
 

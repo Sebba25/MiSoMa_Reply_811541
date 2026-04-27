@@ -17,9 +17,9 @@ from pathlib import Path
 
 import pandas as pd
 
-from agents import format_consistency_agent
-from cache import load_consistency, load_schema_handoff, save_consistency
-from models import (
+from core.agents import format_consistency_agent
+from core.cache import load_consistency, load_schema_handoff, save_consistency
+from core.models import (
     ColumnConsistencyReport,
     ConsistencyValidationReport,
     FormatConsistencyFinding,

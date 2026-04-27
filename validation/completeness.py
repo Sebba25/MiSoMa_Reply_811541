@@ -11,15 +11,53 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from agents import completeness_analysis_agent
-from cache import load_completeness, save_completeness
-from models import CompletenessAnalysisReport
+from core.agents import completeness_analysis_agent
+from core.cache import load_completeness, save_completeness
+from core.models import CompletenessAnalysisReport
 from tools import (
     attach_profile_text,
     build_completeness_profile,
     load_dataset_frame,
     run_agent_with_backoff,
 )
+
+
+def _backfill_missing_like_examples(
+    report: CompletenessAnalysisReport,
+    profile,
+) -> CompletenessAnalysisReport:
+    """Fill missing per-column placeholder examples from the local completeness profile.
+
+    The local profile is computed deterministically from the dataframe before the
+    agent runs, so it is the most reliable source for concrete placeholder tokens
+    such as ``"N.D."`` or ``"unknown"``. The agent still owns the narrative
+    summary and recommendations, but downstream cleaning should not depend on the
+    agent remembering to echo these examples back into every column finding.
+    """
+    # Build a quick lookup from column name to the concrete placeholder examples
+    # already computed locally from the raw dataframe.
+    placeholder_examples_by_column = {
+        column.column_name: column.placeholder_examples
+        for column in profile.columns
+    }
+
+    # Rebuild the per-column findings so only the missing example lists are patched.
+    updated_findings = []
+    for finding in report.per_column:
+        # If the agent already supplied examples for this column, preserve them as-is.
+        if finding.missing_like_examples:
+            updated_findings.append(finding)
+            continue
+
+        # Otherwise pull the deterministic examples from the local profile.
+        examples = placeholder_examples_by_column.get(finding.column_name, [])
+        updated_findings.append(
+            finding.model_copy(update={"missing_like_examples": examples})
+        )
+
+    # Return a fresh report object with the backfilled findings while keeping the
+    # agent-authored summary, recommendations, and dataset-level fields unchanged.
+    return report.model_copy(update={"per_column": updated_findings})
 
 
 def run_completeness_analysis(path: Path, reuse_cache: bool = False) -> CompletenessAnalysisReport:
@@ -44,6 +82,8 @@ def run_completeness_analysis(path: Path, reuse_cache: bool = False) -> Complete
     ]
     print(f"[orchestrator][completeness] dataset='{path.stem}'", file=sys.stderr, flush=True)
     result = run_agent_with_backoff(completeness_analysis_agent, prompt)
-    report = result.output
+    # Keep the agent's narrative analysis, but make sure downstream cleaning has
+    # concrete per-column placeholder examples even when the model omitted them.
+    report = _backfill_missing_like_examples(result.output, profile)
     save_completeness(path, report)
     return report

@@ -12,9 +12,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from agents import anomaly_summary_agent
-from cache import load_anomaly, load_schema_handoff, save_anomaly
-from models import AnomalyDetectionReport, AnomalyFinding, SchemaColumnEntry
+from core.agents import anomaly_summary_agent
+from core.cache import load_anomaly, load_schema_handoff, save_anomaly
+from core.models import AnomalyDetectionReport, AnomalyFinding, SchemaColumnEntry
 from tools import (
     detect_numeric_outlier_candidates,
     detect_rare_category_candidates,

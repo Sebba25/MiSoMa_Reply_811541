@@ -9,7 +9,7 @@ from typing import Any, Callable
 
 from dotenv import load_dotenv
 
-from agents import setup_logfire
+from core.agents import setup_logfire
 from cleaning import run_cleaner_application, run_cleaner_generation, run_cleaning, run_remediation_planning, run_verify
 from cleaning.reporting import _generate_narrative_report_chunked, save_narrative_report
 from validation import (
@@ -154,7 +154,7 @@ def run_validation_bundle(args: argparse.Namespace, dataset_path: Path):
 
 def run_narrative_report(args: argparse.Namespace, dataset_path: Path):
     from cleaning.paths import final_report_path
-    from models import FinalPipelineReport
+    from core.models import FinalPipelineReport
 
     report_path = final_report_path(dataset_path)
     if not report_path.exists():
@@ -166,9 +166,8 @@ def run_narrative_report(args: argparse.Namespace, dataset_path: Path):
     )
     narrative = _generate_narrative_report_chunked(final_report)
     output_path = save_narrative_report(dataset_path, narrative)
-    import sys as _sys
-    _sys.stdout.buffer.write(output_path.read_bytes())
-    _sys.stdout.buffer.write(b"\n")
+    sys.stdout.buffer.write(output_path.read_bytes())
+    sys.stdout.buffer.write(b"\n")
     return narrative
 
 
@@ -257,7 +256,10 @@ def main() -> None:
 
     setup_logfire()
 
-    dataset_path = Path(__file__).parent / args.dataset
+    # Resolve datasets relative to the repository root even though this file now
+    # lives inside the dedicated entrypoints package.
+    repo_root = Path(__file__).resolve().parent.parent
+    dataset_path = repo_root / args.dataset
     if not dataset_path.exists():
         raise SystemExit(f"Dataset not found: {dataset_path}")
 

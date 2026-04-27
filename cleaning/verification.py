@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from cache import load_consistency, load_schema_handoff
-from models import ConsistencyVerificationReport, FindingDiff
+from core.cache import load_consistency, load_schema_handoff
+from core.models import ConsistencyVerificationReport, FindingDiff
 from validation import run_format_consistency_validation
 from tools import load_dataset_frame
 

@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 from pydantic_ai import Agent, CodeExecutionTool, PromptedOutput
 
 # Import structured output schemas
-from models import (
+from core.models import (
     AnomalySummaryOutput,
     CleanerRepairDiagnosis,
     ColumnConsistencyReport,

@@ -9,9 +9,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from agents import duplicate_summary_agent
-from cache import load_duplicates, load_schema_handoff, save_duplicates
-from models import DuplicateDetectionReport, DuplicateRecordGroup
+from core.agents import duplicate_summary_agent
+from core.cache import load_duplicates, load_schema_handoff, save_duplicates
+from core.models import DuplicateDetectionReport, DuplicateRecordGroup
 from tools import (
     detect_exact_duplicate_groups,
     detect_near_duplicate_groups,

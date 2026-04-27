@@ -12,7 +12,7 @@ from typing import Any
 
 import pandas as pd
 
-from models import CellUpdate, ColumnCleanerExecutionReport, ColumnCleanerProgram
+from core.models import CellUpdate, ColumnCleanerExecutionReport, ColumnCleanerProgram
 
 
 def normalize_scalar(value: Any) -> str | None:

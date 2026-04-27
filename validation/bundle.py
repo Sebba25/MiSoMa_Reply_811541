@@ -11,8 +11,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from cache import save_validation_results
-from models import OrchestrationStepResult
+from core.cache import save_validation_results
+from core.models import OrchestrationStepResult
 
 from validation.anomaly import run_anomaly_detection
 from validation.completeness import run_completeness_analysis
