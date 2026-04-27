@@ -160,6 +160,7 @@ def run_verify(path: Path, on_event=None, max_workers: int = 1) -> ConsistencyVe
         reuse_cache=False,
         read_as_str=True, #means read values as strings for consistency analysis
         max_workers=max_workers, #controls parallelism
+        schema_path=path,
     )
     # Map the new findings back to original column names and ignore columns that are now numeric,
     # because format-consistency findings on numeric columns are no longer meaningful here

@@ -534,7 +534,13 @@ async def _run_column_format_checks_async(
     # Rebuild the list in original column order so the caller's downstream logic stays positional
     return [reports_by_index[index] for index in range(len(column_names))]
 
-def run_format_consistency_validation(path: Path, reuse_cache: bool = False, read_as_str: bool = False, max_workers: int = 1) -> ConsistencyValidationReport:
+def run_format_consistency_validation(
+    path: Path,
+    reuse_cache: bool = False,
+    read_as_str: bool = False,
+    max_workers: int = 1,
+    schema_path: Path | None = None,
+) -> ConsistencyValidationReport:
     """Run format consistency checks for all columns and return the combined report.
 
     When max_workers > 1, columns are checked concurrently using async tasks. Schema context
@@ -547,8 +553,10 @@ def run_format_consistency_validation(path: Path, reuse_cache: bool = False, rea
     df = load_dataset_frame(path, dtype=str if read_as_str else None)
     format_findings: list[FormatConsistencyFinding] = []
 
-    # Load schema to provide pattern and dtype context to each column check
-    handoff = load_schema_handoff(path)
+    # Load schema to provide pattern and dtype context to each column check.
+    # Verification reads the cleaned CSV but must still use the original dataset's
+    # schema cache, so callers can pass schema_path separately from the data path.
+    handoff = load_schema_handoff(schema_path or path)
     schema_map = {col.name: col for col in handoff.columns}
 
     column_names = list(df.columns)
