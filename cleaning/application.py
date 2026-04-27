@@ -508,12 +508,12 @@ def run_cleaner_application_with_plan(
         #If the actual rename map matches the action, mark the action as applied
         if rename_map.get(column_name) == new_name:
             action.status = "applied"
-        #If the old column is no longer in the dataframe,mark the action as not needed
+        #If the old column is gone but was renamed to a different name, the planned rename failed
         elif column_name not in df.columns:
-            action.status = "not_needed"
-        #otherwise, mark as not needed
+            action.status = "failed"
+        #Column is still present under the old name — rename never happened
         else:
-            action.status = "not_needed"
+            action.status = "failed"
 
     #Start step 5 logging
     print("\n[apply] step 5 - dtype casting (from schema cache)", file=sys.stderr)

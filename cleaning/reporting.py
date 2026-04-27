@@ -94,7 +94,7 @@ def build_final_report(
     manual_review_queue = [
         action
         for action in remediation_plan.actions
-        if action.status == "proposed_not_applied"
+        if action.status == "proposed_not_applied" and action.action_type == "manual_review"
     ]
 
     # Use the verification summary when available, otherwise provide a fallback message.
