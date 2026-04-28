@@ -1,9 +1,10 @@
 __pycache__/
 *.py[cod]
 
-.claude/
 .env
 .logfire/
 **/.validation_cache/
 **/.cleaning_cache/
+
+.Resources/
 

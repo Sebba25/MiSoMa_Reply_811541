@@ -1,9 +1,65 @@
 # NOIPA: Multi-agent system for data quality
 
-## Pydantic framework
-Pydantic is a Python library whose primary purpose is data validation. It works by letting the developer describe the expected shape of a piece of data as a regular Python class, where each attribute is annotated with a type. Pydantic then uses those annotations to parse and validate incoming data automatically: when an object is instantiated, every value is checked against its declared type and any additional constraints, and if something does not conform, a structured error is raised immediately with a precise description of what failed and where. Beyond validation, Pydantic also handles type coercion, meaning it can convert a string to an integer or a date when the conversion is unambiguous, and it provides serialisation utilities that make it straightforward to convert models to and from formats such as JSON.
+**Authors:** Michele Turco, Mattia Sebastiani, Sofia Bruni
 
-In a multi-agent system, these properties become particularly important. Agents communicate by passing structured data to one another, and because each agent is an independent component with its own logic, there is no guarantee that the output of one will naturally conform to what the next one expects. Pydantic addresses this by making the interface between agents explicit and machine-enforceable: each agent declares the exact shape of the data it accepts and the exact shape of the data it produces, and any deviation is caught immediately at the handoff rather than causing a silent failure deeper in the pipeline. This is especially valuable when agents are language-model-based, since their outputs are generated text that must be parsed and validated before being treated as structured data
+## Section 1 — Introduction
 
-### Data contracts and validation
-In the Pydantic framework, a data contract is a Python class that declares, for each piece of data the application handles, what type it must have, what values are acceptable, and what should happen when those expectations are not met. Rather than validating data through scattered conditional checks, Pydantic centralises these rules into model classes that enforce them automatically at the moment data enters or leaves a component. When a value does not satisfy the declared contract, Pydantic raises a structured validation error immediately, so failures are caught at the boundary rather than silently propagated into the rest of the pipeline.
+NOIPA is a multi-agent system for validating and cleaning CSV datasets from the Italian Public Administration. The problem it addresses is not the absence of data, but its inconsistency: values may be present in the file and still be difficult to use because they are encoded in different formats, grouped under unstable column names, or mixed with placeholders that obscure the real content. In that setting, manual cleanup is slow and fragile, while a single monolithic LLM prompt is too unconstrained to be trusted.
+
+The project therefore proposes a staged pipeline that combines large language models with deterministic validation logic. The intent is to inspect the data, diagnose quality issues, and produce repairs in a way that remains reproducible and auditable. The notebook is written as a guided walkthrough of the production code, so that the transformation from raw CSV to cleaned output can be followed step by step.
+
+## Section 2 — Methods
+
+The system is built as a multi-agent pipeline in which each agent has a narrow responsibility and exchanges structured data with the next stage. This design choice was made to reduce ambiguity and to keep the workflow debuggable. Schema inference, completeness analysis, format consistency checking, anomaly detection, remediation planning, cleaning generation, and verification are separated so that each stage can solve one concrete subproblem instead of trying to reason about the whole pipeline at once. That separation also makes failures easier to localise, because a defect in one stage does not blur the responsibility of the next one.
+
+### Use of Pydantic
+
+Pydantic is the backbone of the architecture because the entire pipeline depends on reliable machine-to-machine handoffs. In a language-model workflow, unconstrained text output is a source of variability, and variability is especially risky when the output of one agent becomes the input of another. Pydantic data contracts reduce that risk by forcing every agent to emit a predefined structure. As a result, the interface between stages becomes deterministic, parseable, and easy to validate automatically.
+
+The notebook and the production modules use this idea consistently. Pydantic models define not only the agent outputs, but also the validation artifacts, the cleaning requests, the remediation plan, the generated programs, the verification results, and the final narrative report. The same contract layer therefore supports both the factual pipeline and the presentation layer. This is valuable in a multi-agent system because a mistake at one boundary can otherwise cascade silently into later stages.
+
+### Token efficiency and model choice
+
+A second design choice concerns token efficiency. At most 500 values are passed to the LLM per interaction, which keeps the prompts deliberately compact and avoids unnecessary token consumption. Instead of sending an entire column or a large sample, the pipeline sends only representative values and local evidence that are sufficient for diagnosis. This keeps the system inexpensive to run and makes repeated experimentation practical.
+
+The token budget also makes it possible to use a stronger lightweight model, GPT-4.5 nano, without turning the pipeline into a costly workflow. Deterministic Python code handles counting, profiling, and validation, while the model is reserved for interpretation, synthesis, and structured reasoning. That division of labour is central to the design.
+
+### Pipeline flow
+
+The overall pipeline follows a fixed sequence. First, schema inference estimates the structure of each column and produces a baseline schema handoff. Next, validation stages inspect completeness, format consistency, anomalies, and cross-column relationships. The resulting evidence is then converted into column-level cleaning requests, which feed a generation stage that proposes candidate cleaning functions. Those functions are checked by a deterministic validator before being accepted, and a critic agent is used when repairs are required. Finally, the accepted transformations are applied to the dataset and the outcome is reported through a verification and reporting layer.
+
+The environment and dependency list are not reproduced in full here; the complete set of packages required to run the project is available in [requirements.txt](requirements.txt).
+
+## Section 3 — Experimental Design
+
+The development process relied on several iterative runs of the pipeline, primarily to fine-tune prompts and guardrails so that agent outputs became as deterministic as possible without losing the flexibility needed to handle heterogeneous public datasets. The experimental approach was therefore empirical rather than comparative: the main goal was to observe where the pipeline failed, understand why it failed, and refine the prompts, contracts, and validation rules accordingly.
+
+No formal external baselines were used. Instead, the practical reference point was the behaviour of the same system under earlier prompt and guardrail configurations. Each agent call was monitored through Logfire, including its input, output, and reasoning trace, which made it possible to identify precisely which instruction or constraint had been ineffective in a given case. This monitoring process served as the main evaluation method for the project, because it allowed rapid iteration on failure modes such as inconsistent formatting, over-permissive transformations, and ambiguous repairs.
+
+The main purpose of these experiments was to validate that the pipeline could remain stable across different datasets and different classes of data quality issues. The absence of formal baselines does not reduce the value of the evaluation in this setting, because the project objective was operational robustness rather than benchmark optimisation.
+
+## Section 4 — Results
+
+The pipeline produces a layered account of data quality rather than a single yes-or-no verdict. At the schema level, it identifies naming issues and dtype-related inconsistencies; at the completeness level, it distinguishes true missing values from placeholder-like tokens; at the consistency level, it isolates values that follow a different structural pattern from the dominant one; and at the remediation stage, it turns those findings into concrete cleaning actions that can be checked before they are applied. The practical result is a workflow that does not merely classify the dataset as “clean” or “dirty”, but explains which kinds of problems are present and how they are handled.
+
+The most important operational result is that the generated cleaners are never trusted blindly. Each candidate function is validated against representative dominant values and outlier examples before being accepted, which keeps the system from silently introducing new errors while attempting to fix existing ones. The final verification stage then compares the pre-cleaning and post-cleaning consistency evidence, so the effect of the cleaning step remains visible in the report rather than being assumed.
+
+The notebook also shows that the token-efficiency strategy is practical. Limiting each interaction to a compact set of representative values keeps the pipeline lightweight enough to support repeated experimentation, while still supplying enough evidence for the model to make meaningful structured decisions. The main result is therefore architectural as much as analytical: the pipeline demonstrates that a constrained LLM can be integrated into a deterministic data-quality workflow without sacrificing traceability.
+
+The figures and tables for this section are generated from the code and should be inserted once the corresponding outputs are final.
+
+**Figure 1.** [FIGURE X — pipeline overview generated from the code]
+
+**Table 1.** [INSERT RESULT TABLE — summary of validation, cleaning, and verification outcomes]
+
+**Placeholders for final reporting**
+
+- [INSERT RESULT]: number of schema issues identified.
+- [INSERT RESULT]: number of inconsistent columns repaired or improved.
+- [INSERT RESULT]: verification outcome after the cleaning stage.
+
+## Section 5 — Conclusions
+
+The project shows that a multi-agent cleaning pipeline can be made reliable for public-administration CSV datasets when every LLM interaction is bounded by explicit Pydantic contracts and every generated transformation is checked by deterministic code. In that configuration, the model is used for interpretation and synthesis, while the host environment remains responsible for structure, validation, and correctness. That balance is what makes the workflow both practical and explainable.
+
+Several questions remain open. It is still necessary to understand how the same architecture behaves on datasets with stronger domain drift, denser corruption, or more ambiguous value conventions. A natural next step would be to test the pipeline on additional public-administration datasets and to measure more systematically which stages fail, under what conditions, and with what kind of prompt changes. Another useful extension would be to refine the critic-and-repair loop so that difficult cleaning cases can be resolved with fewer retries while preserving the same deterministic safeguards.
