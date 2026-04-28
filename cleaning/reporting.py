@@ -93,16 +93,6 @@ def build_final_report(
         for action in remediation_plan.actions
         if action.action_type in {"drop_rows_candidate", "drop_exact_duplicate_rows"}
     ]
-    applied_duplicate_row_drop_actions = [
-        action
-        for action in remediation_plan.actions
-        if action.action_type == "drop_exact_duplicate_rows" and action.status == "applied"
-    ]
-    dropped_exact_duplicate_rows = sum(
-        len(action.target.get("drop_row_indices", []))
-        for action in applied_duplicate_row_drop_actions
-        if isinstance(action.target, dict)
-    )
     manual_review_queue = [
         action
         for action in remediation_plan.actions
@@ -115,7 +105,7 @@ def build_final_report(
     summary = (
         f"Validation found {sum(validation_summary.values())} section-level findings/signals. "
         f"Applied {len(applied_actions)} remediation actions, left {len(proposed_not_applied_actions)} proposed without auto-apply, "
-        f"recorded {len(failed_actions)} failed actions, and dropped {dropped_exact_duplicate_rows} exact duplicate rows."
+        f"and recorded {len(failed_actions)} failed actions."
     )
 
     # Read authoritative non-null counts from the cleaned CSV for later narrative tables.
@@ -315,21 +305,6 @@ def _build_narrative_section_specs(final_report: FinalPipelineReport) -> list[tu
         f"- duplicate_type={group.duplicate_type}, row_indices={group.row_indices[:8]}, key_columns={group.key_columns}, evidence={group.evidence}"
         for group in final_report.duplicate_groups
     ] or ["- No duplicate row groups were recorded."]
-    applied_duplicate_row_drop_actions = [
-        action
-        for action in final_report.applied_actions
-        if action.action_type == "drop_exact_duplicate_rows"
-    ]
-    dropped_exact_duplicate_rows = sum(
-        len(action.target.get("drop_row_indices", []))
-        for action in applied_duplicate_row_drop_actions
-        if isinstance(action.target, dict)
-    )
-    duplicate_removal_lines = [
-        f"- applied_row_drop: keep_row_index={action.target.get('keep_row_index')}, dropped_rows={action.target.get('drop_row_indices', [])[:8]}, drop_count={len(action.target.get('drop_row_indices', []))}"
-        for action in applied_duplicate_row_drop_actions[:10]
-        if isinstance(action.target, dict)
-    ] or ["- No exact duplicate row drops were applied."]
     remediation_lines = [
         f"- action_type={action.action_type}, status={action.status}, target={_display_target(action.target)}, reason={action.reason}"
         for action in (
@@ -370,7 +345,6 @@ def _build_narrative_section_specs(final_report: FinalPipelineReport) -> list[tu
                     f"Overall summary: {final_report.summary}",
                     f"Verification summary: {final_report.verification_summary}",
                     f"Applied={len(final_report.applied_actions)}, Deferred={len(final_report.proposed_not_applied_actions)}, Failed={len(final_report.failed_actions)}, Not Needed={len(final_report.not_needed_actions)}",
-                    f"Exact duplicate rows dropped: {dropped_exact_duplicate_rows}",
                 ]
             ),
         ),
@@ -463,13 +437,9 @@ def _build_narrative_section_specs(final_report: FinalPipelineReport) -> list[tu
                 [
                     "FORMAT REQUIREMENTS:",
                     "- Use prose plus a compact bullet list of representative groups.",
-                    "- Briefly state whether any exact duplicate rows were actually removed during cleaning.",
                     "- Mention exact vs near-duplicate framing only if present in the provided lines.",
                     "- Do not use backticks for ordinary labels or row-index examples.",
                     "",
-                    f"Applied exact duplicate row-drop actions: {len(applied_duplicate_row_drop_actions)}",
-                    f"Exact duplicate rows removed during cleaning: {dropped_exact_duplicate_rows}",
-                    *duplicate_removal_lines,
                     *duplicate_lines,
                 ]
             ),
