@@ -33,12 +33,6 @@ def render_cell_text(value: object) -> str | None:
     return rendered or None
 
 
-def is_missing_like(value: object) -> bool:
-    """Return True when a single value should be treated as placeholder-like missingness."""
-    normalized = normalize_cell_text(value)
-    return normalized in PLACEHOLDER_TOKENS
-
-
 def _series_to_numeric(series: pd.Series) -> pd.Series:
     """Coerce a series to numeric with light normalization for decimal commas."""
     normalized = series.astype(str).str.strip().str.replace(",", ".", regex=False)
@@ -475,7 +469,10 @@ def detect_exact_duplicate_groups(df: pd.DataFrame, max_groups: int = 25) -> lis
         findings.append(
             {
                 "duplicate_type": "exact_row",
-                "row_indices": row_indices[:20],
+                # Keep the full index list so downstream remediation can drop the
+                # exact duplicate rows deterministically instead of only reporting
+                # a truncated preview.
+                "row_indices": row_indices,
                 "key_columns": list(df.columns),
                 "evidence": f"{len(row_indices)} rows are exact duplicates after whitespace/case normalization.",
                 "suggested_action": "Review whether duplicate rows should be deduplicated or retained as legitimate repeated records.",

@@ -27,7 +27,6 @@ from core.models import (
     CrossColumnSummaryOutput,
     DatasetDtypeInference,
     DuplicateSummaryOutput,
-    NarrativeReport,
     NarrativeReportSection,
     NarrativeFrontMatter,
     SchemaSummaryOutput,
@@ -221,7 +220,7 @@ format_consistency_agent = Agent(
 
         "DECISION RULES:\n"
         "- Return finding=null if machine_format_candidate is false, dominant_shape_pct is below 70%, or inconsistent_rows is 0.\n"
-        "- Return finding=null for descriptive, free-text, name, note, or categorical columns — content variation is not a format issue.\n"
+        "- Return finding=null for descriptive, free-text, name, note, or categorical columns â€” content variation is not a format issue.\n"
         "- Return finding=null if all value variation is explained by missing/placeholder values alone.\n"
         "- Only report a finding when there is a clear dominant format and a measurable set of outliers that a cleaning function could fix.\n\n"
 
@@ -229,9 +228,9 @@ format_consistency_agent = Agent(
         "- expected_pattern: describe ONE canonical dominant target format only (e.g. 'YYYYMM', 'YYYY-MM', 'ISO timestamp YYYY-MM-DDTHH:MM:SS.ffffff', 'two-digit zero-padded month 01-12').\n"
         "- expected_pattern must never describe multiple acceptable formats. Do not use words like 'mixed', 'various', 'multiple', 'and', or 'or'.\n"
         "- Choose the single dominant already-valid pattern shown by dominant_example_values; outlier formats belong in suggested_strategy, not in expected_pattern.\n"
-        "- Copy ALL values from inconsistent_examples verbatim into example_inconsistent_values — do not filter, deduplicate, or summarize. The cleaner needs the full set.\n"
+        "- Copy ALL values from inconsistent_examples verbatim into example_inconsistent_values â€” do not filter, deduplicate, or summarize. The cleaner needs the full set.\n"
         "- evidence: cite dominant_shape, dominant_shape_pct, inconsistent_rows, and the target dtype from the prompt context.\n"
-        "- suggested_strategy: this is the most important field — the downstream cleaner reads it as its normalization contract. "
+        "- suggested_strategy: this is the most important field â€” the downstream cleaner reads it as its normalization contract. "
         "List every outlier shape group with 2-3 concrete examples and the exact transformation needed. "
         "Be specific: 'shape YYYY-MM (e.g. 2023-09): remove dash, concatenate to YYYYMM' is good. "
         "'normalize dates' is not acceptable. "
@@ -329,22 +328,23 @@ column_cleaner_generator_agent = Agent(
         "- The final python_code must run if pasted into a fresh Python file with no surrounding variables. Do not rely on outer-scope names, uploaded files, request_data, or globals defined elsewhere.\n"
         "- The final python_code must NEVER reference scratch variables from the testing block such as dominant, inconsistent, failed, request, request_data, previous_program, or validation_issues unless they are explicitly defined inside the function body.\n"
         "- Variables created in the one-shot code execution block are scratchpad-only and must not appear in the final returned function unless they are redefined inside that function.\n"
-        "- Input: any scalar — str, int, float, None, NaN. Output: str or None only.\n"
+        "- Input: any scalar â€” str, int, float, None, NaN. Output: str or None only.\n"
         "- Return None only for missing/empty input or truly unrecoverable values.\n"
         "- Return the value unchanged if it already matches expected_pattern.\n"
         "- Every dominant_example_value is already valid. If your function changes even one dominant example, the function is invalid.\n"
         "- Treat dominant_example_values as evidence of the valid target format, not as an exact allowlist. "
         "For datetime values and fixed-structure string formats, prefer generic pass-through logic for already-valid values instead of checking membership in the exact examples. "
         "For Int64/Float64 targets, do NOT define validity from the width or shape of one dominant example; use expected_pattern and numeric validity instead.\n"
-        "- Every value in example_inconsistent_values must be transformed or explicitly nulled — never returned as-is.\n"
-        "- suggested_strategy is the authoritative contract — implement a handler for every shape group it lists, no exceptions.\n"
+        "- Every value in example_inconsistent_values must be transformed or explicitly nulled â€” never returned as-is.\n"
+        "- suggested_strategy is the authoritative contract â€” implement a handler for every shape group it lists, no exceptions.\n"
         "- Prefer recovery over None: strip prefixes, expand abbreviations, extract embedded numbers. "
-        "If a value contains any recoverable information, return it transformed — not None.\n"
+        "If a value contains any recoverable information, return it transformed â€” not None.\n"
+        "- For expected_pattern 'YYYYMM', if the input exposes a recoverable 4-digit year but omits month, default the month to '01' rather than returning None, unless the request explicitly says otherwise.\n"
         "- If a value is invalid but unrecoverable for the target pattern, return None instead of inventing a best-guess correction.\n"
 
         "OUTPUT FORMAT BY TARGET DTYPE:\n"
         "- datetime64[ns]: string matching the EXACT strftime format seen in dominant_example_values.\n"
-        "- Int64 / Float64: numeric string only — no units, no symbols. Use zfill/format for zero-padded outputs.\n"
+        "- Int64 / Float64: numeric string only â€” no units, no symbols. Use zfill/format for zero-padded outputs.\n"
         "- string: clean text matching expected_pattern.\n"
         "Always verify your output against the true target contract before returning.\n"
         "For datetime values and fixed-structure string formats, match the canonical structure shown by dominant_example_values. "
@@ -357,7 +357,7 @@ column_cleaner_generator_agent = Agent(
         "For datetime columns and fixed-structure string formats, this should be a canonical-pattern early-exit that returns "
         "the value unchanged when it already matches the structural layout of a dominant_example_value. "
         "Build that guard by deriving a regex from one dominant example: keep literal separators, replace each digit run with "
-        "\\d{N} where N is that run's length. If s.fullmatch(pattern) returns true, return s immediately — do not enter any "
+        "\\d{N} where N is that run's length. If s.fullmatch(pattern) returns true, return s immediately â€” do not enter any "
         "delimiter-based branch after that point. "
         "For Int64/Float64 targets, do NOT build the already-valid guard from one dominant example or one dominant width. "
         "Use expected_pattern and numeric validity to decide whether a value is already valid. "
@@ -380,12 +380,12 @@ column_cleaner_generator_agent = Agent(
         "`s.count(sep) == N` branch that handles all layouts for that separator internally. Do not scatter multiple top-level "
         "branches for the same delimiter.\n\n"
 
-        "CODE EXECUTION — MANDATORY TEMPLATE (use this exact structure every time):\n"
+        "CODE EXECUTION â€” MANDATORY TEMPLATE (use this exact structure every time):\n"
         "```python\n"
-        "# 1. Define test data as literals — NEVER use request_data or any external variable\n"
+        "# 1. Define test data as literals â€” NEVER use request_data or any external variable\n"
         "dominant = ['...', '...']       # copy exact values from the request\n"
         "inconsistent = ['...', '...']   # copy exact values from the request\n\n"
-        "# 2. Define the function — all imports and helpers go inside\n"
+        "# 2. Define the function â€” all imports and helpers go inside\n"
         "def clean_COLUMN(value):\n"
         "    import re\n"
         "    if value is None or str(value).strip() == '':\n"
@@ -440,16 +440,16 @@ column_cleaner_generator_agent = Agent(
         "    print(f'\\nFAILED ({len(failed)}): {failed}')\n"
         "    print('Return the current best program; the host validator and critic will handle repair.')\n"
         "```\n\n"
-        "ISOLATION: each execution block is a fresh environment — nothing from previous runs survives. "
+        "ISOLATION: each execution block is a fresh environment â€” nothing from previous runs survives. "
         "You are limited to one code execution call, so include steps 1-3 in that single block.\n\n"
 
         "OUTPUT RULES:\n"
         "- Return valid JSON matching ColumnCleanerProgram exactly.\n"
-        "- python_code must contain ONLY the function definition — no test code, no print statements, no variable assignments, no JSON.\n"
-        "- verification_summary, example_transformations, and residual_risks are separate top-level fields — never embed them inside python_code.\n"
+        "- python_code must contain ONLY the function definition â€” no test code, no print statements, no variable assignments, no JSON.\n"
+        "- verification_summary, example_transformations, and residual_risks are separate top-level fields â€” never embed them inside python_code.\n"
         "- verification_summary must be honest about whether the final grouped test passed or still had failures.\n"
         "- example_transformations must reflect actual code execution results, not hypothetical ones.\n"
-        "- cleaned_value must be a string or null — never int or float.\n"
+        "- cleaned_value must be a string or null â€” never int or float.\n"
         "- No markdown, no follow-up questions."
     ),
 )
@@ -484,7 +484,7 @@ cleaner_repair_critic_agent = Agent(
         "- For numeric measures, do not recommend fixed-width padding unless the request explicitly requires it.\n"
         "- For numeric codes and date/time patterns, structural consistency is important; mention that when relevant.\n\n"
 
-        "COMPOSITE FAILURES — DO NOT FIXATE ON A SINGLE CATEGORY:\n"
+        "COMPOSITE FAILURES â€” DO NOT FIXATE ON A SINGLE CATEGORY:\n"
         "When the issue list contains BOTH a 'shadowed_specific_branch' (structural/order bug) AND a 'dominant_value_modified' "
         "(behavioral bug), they are usually the same root cause: a generic delimiter branch appears before the canonical-value "
         "guard and rewrites valid inputs. In that case:\n"
@@ -492,22 +492,22 @@ cleaner_repair_critic_agent = Agent(
         "  - planned_fix MUST prescribe TWO concrete structural changes, not just 'check valid format first':\n"
         "      1) insert (or move to the top) a structural regex guard derived from the dominant example that returns s unchanged on match;\n"
         "      2) reorder or merge delimiter branches so no generic `'<sep>' in s` branch precedes a more specific branch inspecting the same separator.\n"
-        "  - patch_style should be 'targeted_rewrite' when both categories are present — a minimal edit is not sufficient.\n"
-        "  - priority_issues must list the structural bug first, the behavioral bug second — they share one fix.\n"
+        "  - patch_style should be 'targeted_rewrite' when both categories are present â€” a minimal edit is not sufficient.\n"
+        "  - priority_issues must list the structural bug first, the behavioral bug second â€” they share one fix.\n"
         "When the previous critic attempt already gave advice that the generator ignored (you are seeing the same failure pair on a later attempt), escalate the wording: say 'the previous repair brief was not followed' and restate the required rewrite in imperative form.\n\n"
 
         "COMPONENT-ORDER REWRITES (not delimiter swaps):\n"
-        "When the failing output has the correct delimiters but the wrong component order — e.g. input '11/01/2024' becoming "
-        "'11-01-2024T00:00:00.000' when the expected canonical output is '2024-01-11T00:00:00.000' — the bug is that the generator "
+        "When the failing output has the correct delimiters but the wrong component order â€” e.g. input '11/01/2024' becoming "
+        "'11-01-2024T00:00:00.000' when the expected canonical output is '2024-01-11T00:00:00.000' â€” the bug is that the generator "
         "is swapping the separator character on the raw string instead of parsing the components and reassembling them in the "
-        "canonical order. DO NOT say 'change the output format to YYYY-MM-DD' — that phrasing is ambiguous and the generator will "
+        "canonical order. DO NOT say 'change the output format to YYYY-MM-DD' â€” that phrasing is ambiguous and the generator will "
         "re-interpret it as another delimiter swap. Instead:\n"
         "  - root_cause MUST state: 'the branch emits the raw components in source order with a new delimiter instead of reordering them'.\n"
         "  - planned_fix MUST be prescriptive about parsing and reassembly, for example: "
         "'split the value into (day, month, year) for the DD/MM/YYYY branch, then emit f\"{year}-{month:0>2}-{day:0>2}T00:00:00.000\"; "
         "never apply str.replace(\"/\", \"-\") on the whole string'.\n"
         "  - exact_repairs MUST include a line for every distinct source layout (DD/MM/YYYY, YYYY/MM/DD, DD-MM-YY, DD.MM.YYYY, "
-        "textual months, etc.) showing input → expected_output and the explicit (year, month, day) assignment the generator must produce.\n"
+        "textual months, etc.) showing input â†’ expected_output and the explicit (year, month, day) assignment the generator must produce.\n"
         "  - patch_style='targeted_rewrite'. A minimal edit is insufficient because the problem is how components are assembled, not which character separates them.\n\n"
 
         "FIELD RULES:\n"
@@ -530,143 +530,6 @@ cleaner_repair_critic_agent = Agent(
         "- No markdown, no code, no follow-up questions."
     ),
 )
-
-
-narrative_report_agent = Agent(
-    MODEL,
-    name="narrative-report",
-    output_type=PromptedOutput(NarrativeReport),
-    retries=4,
-    model_settings={"temperature": 0.3},
-    instructions=(
-        "You are the Narrative Report Writer agent for the NoiPA dataset quality pipeline. "
-        "NoiPA is the digital platform of the Italian Ministry of Economy and Finance (MEF) that manages salaries, "
-        "timesheets, and tax/social-security obligations for employees of the Italian Public Administration.\n\n"
-
-        "You receive a structured quality briefing derived from the pipeline's validation, remediation, "
-        "cleaning, and verification stages. Produce an EXHAUSTIVE, professional, human-readable quality "
-        "report in ENGLISH that a data steward, project manager, or auditor can use as a definitive "
-        "reference document.\n\n"
-
-        "MANDATORY SECTIONS (use these exact English headings):\n\n"
-
-        "1. 'Dataset Overview' — Dataset name, total rows, total columns (original and after cleaning). "
-        "Overall quality posture: total findings, actions applied, actions deferred to manual review. "
-        "State the cleaned output file path. ALWAYS wrap any filesystem path in backticks (inline code) so "
-        "Markdown does not eat backslashes on Windows paths — e.g. `C:\\Users\\...\\cleaned.csv`.\n\n"
-
-        "2. 'Schema Validation' — Two subsections:\n"
-        "   a) 'Column Renames': list EVERY column rename as a markdown table with columns: Original Name | New Name | Reason.\n"
-        "   b) 'Type Casts': list EVERY dtype cast as a markdown table with columns: Column | Assigned Type | % Non-Null. "
-        "   The % Non-Null value MUST come from the NON-NULL COUNTS block in the briefing — it already provides each column's "
-        "   exact percentage, computed from the cleaned CSV. Copy that percentage verbatim. "
-        "   Never estimate, interpolate, or invent these numbers. If a column cast does not appear in the NON-NULL COUNTS "
-        "   block (e.g. the cast was not_needed and the column does not exist in the cleaned frame), leave the cell as 'n/a'. "
-        "   Mention any casts that were planned but marked not_needed and why.\n\n"
-
-        "3. 'Completeness Analysis' — For EACH column where placeholders were replaced, state: "
-        "the column name, how many placeholder values were found, which placeholder tokens were detected "
-        "(list the actual examples like 'n.d.', '-', '//', '?', 'unknown', empty string), "
-        "and that they were replaced with null. Use a markdown table. "
-        "Source of truth: the COMPLETENESS DETAILS block in the briefing — copy each column's "
-        "missing_like_count, completeness %, and tokens verbatim. Do not invent placeholder examples. "
-        "Also mention columns where placeholder replacement was planned but not needed.\n\n"
-
-        "4. 'Format Consistency' — THIS IS WHERE THE MAJOR INCONSISTENCIES WERE FOUND AND FIXED. "
-        "Begin with a one-sentence summary of how many columns had format issues. "
-        "Then for EACH column where a cleaner was generated, use this EXACT structured format:\n"
-        "### column_name\n"
-        "- **Expected Pattern:** …\n"
-        "- **Inconsistent Rows:** N\n"
-        "- **Examples of bad values:** 'val1', 'val2', 'val3'\n"
-        "- **Transformation applied:** …\n"
-        "- **Clean example:** 'bad_value' → 'clean_value'\n"
-        "- **Outcome:** Fixed / Mostly Fixed / Unchanged / Regression\n\n"
-        "Use 'Fixed' when fully resolved, 'Mostly Fixed' when substantially improved with residual issues, "
-        "'Unchanged' when no improvement, 'Regression' when worse. "
-        "Never collapse multiple columns into a single paragraph — each gets its own ### heading and bullet list.\n\n"
-
-        "MANDATORY RULE FOR CLEAN EXAMPLES: "
-        "The 'Clean example' line MUST be copied verbatim from the CLEANER EXAMPLE TRANSFORMATIONS block in the briefing. "
-        "Find the section for that exact column and quote ONE entry — both the original and the cleaned value, character for character, "
-        "including any trailing '.000', time suffixes, leading zeros, or punctuation. "
-        "Do NOT reformat the cleaned value. Do NOT trim it to 'look like ISO 8601' or 'look like YYYYMM'. "
-        "Do NOT invent pairings when the transformation list does not contain a given input (for example, 'Rata 2024' does not imply any specific month — if the ground-truth list does not contain 'Rata 2024' with a cleaned month attached, pick a different input that IS in the list). "
-        "If a column has no entries in the CLEANER EXAMPLE TRANSFORMATIONS block, OMIT the 'Clean example' bullet entirely for that column rather than fabricate one. "
-        "Similarly, 'Examples of bad values' should be drawn from the BRIEFING's inconsistent-examples list, not invented.\n\n"
-
-        "5. 'Anomaly Detection' — Cover numeric outliers and rare categories separately, grounded in the "
-        "ANOMALY FINDINGS block in the briefing. Every column name, severity, affected_rows count, and example "
-        "value MUST be quoted from that block. The 'evidence' line in each finding contains the IQR band or "
-        "frequency threshold — quote it directly; do NOT compute or invent one. "
-        "If the ANOMALY FINDINGS block is empty or absent, state clearly that no anomalies were detected and "
-        "skip the rest of this section rather than fabricate entries. "
-        "Explain why each flagged item was routed to manual review rather than auto-corrected, citing the "
-        "'suggested_action' line from the block.\n\n"
-
-        "6. 'Cross-Column Checks' — Every fact in this section MUST come from the CROSS-COLUMN FINDINGS "
-        "block in the briefing. Each finding there has a check_type that maps to one subsection below — "
-        "never list the same pair in more than one subsection, and never invent pairs that are not in the block.\n"
-        "   a) Exact duplicate columns (check_type=exact_duplicate_columns). ONLY list a pair here if BOTH: "
-        "      (i) a finding with check_type=exact_duplicate_columns exists in the block, AND "
-        "      (ii) an action of type `drop_exact_duplicate_column` targeting that pair appears in APPLIED ACTIONS. "
-        "      If either is missing, state 'No exact duplicate columns were detected.' "
-        "      Do NOT claim a drop based on similarity % alone — 99.x% is a near-duplicate, not an exact duplicate.\n"
-        "   b) Near-duplicate columns (check_type=near_duplicate_columns): list each pair with its similarity_pct "
-        "      and affected_rows count exactly as given in the block. These pairs were NOT dropped; they require manual review.\n"
-        "   c) Semantic conflicts (check_type=duplicate_semantic_conflict): list columns and affected_rows from the block.\n"
-        "   d) Period/date consistency (check_type=year_month_period_mismatch or date_order_violation): "
-        "      list the columns and affected_rows from the block.\n"
-        "If the CROSS-COLUMN FINDINGS block is empty or absent, state 'No cross-column anomalies were detected.' "
-        "and omit subsections (a)-(d).\n\n"
-
-        "7. 'Row Duplicate Analysis' — Ground every fact in the DUPLICATE ROW GROUPS block in the briefing. "
-        "State how many exact duplicate groups vs. near-duplicate groups exist, quoting the block's group counts "
-        "and total affected rows. Give 2-3 concrete row-index examples, copying indices verbatim from the "
-        "sample_indices lines (never invent indices). Quote the key_columns list from the block. "
-        "Explain why exact duplicates were NOT auto-removed (conservative policy) and why near-duplicates require "
-        "manual review, citing the 'evidence' line. "
-        "If the block is empty or absent, state that no duplicate rows were detected and skip the rest of the section.\n\n"
-
-        "8. 'Remediation Action Summary' — Provide a complete accounting:\n"
-        "   a) Summary counts, in this exact order: Applied, Deferred, Failed, Not Needed. "
-        "      These four buckets partition the action set and must sum to the total. "
-        "      'Deferred' = proposed_not_applied (items routed to manual review). "
-        "      'Not Needed' = actions that turned out to be redundant or already satisfied — it is a DIFFERENT category "
-        "      from Deferred; do NOT merge the two into one count.\n"
-        "   b) Breakdown by action type (markdown table): Action Type | Applied | Deferred | Failed | Not Needed.\n"
-        "   c) Briefly explain the auto-apply policy: what is safe to auto-apply and what requires human review.\n\n"
-
-        "9. 'Verification Outcome' — This section reports which format inconsistencies were cleaned and to what degree. "
-        "Report the verification results: how many consistency findings were resolved, mostly fixed, unchanged, or regressed. "
-        "Use the VERIFICATION DIFFS rows from the briefing verbatim. "
-        "When a column was renamed (new_name differs from the original), list it under its NEW name in the "
-        "cleaned CSV and note the rename arrow inline (e.g. 'rata (renamed from RATA): Fixed'). "
-        "Do NOT list the pre-rename name on its own — it does not exist in the cleaned output. "
-        "List each column with its Before status and After status using the labels: "
-        "Fixed / Mostly Fixed / Unchanged / Regression. "
-        "Explain what 'Fixed' means (inconsistent rows now conform to the expected pattern).\n\n"
-
-        "10. 'Residual Risks & Manual Review Queue' — List ALL items requiring manual review: "
-        "near-duplicate columns, semantic conflicts, near-duplicate rows, numeric outliers, proposed-not-applied actions. "
-        "For each, state what action is needed and why it was not automated. "
-        "If there are no unresolved risks from cleaning, state that explicitly.\n\n"
-
-        "STYLE RULES:\n"
-        "- Write in clear, professional English suitable for institutional documentation.\n"
-        "- Every claim must cite concrete data from the briefing: column names, row counts, percentages, example values.\n"
-        "- Use markdown tables for structured data (renames, casts, placeholders, near-duplicate pairs).\n"
-        "- Use bullet lists for enumerated findings.\n"
-        "- Each section body must be at least 150 words — this is an exhaustive report, not a summary.\n"
-        "- The executive_summary must be 8-12 sentences and readable standalone, in English.\n"
-        "- Do not invent facts not present in the input document.\n"
-        "- Do not use generic filler phrases — every sentence must carry information.\n"
-        "- recommendations must contain at least 5 actionable, prioritized items in English.\n\n"
-
-        "OUTPUT: valid JSON matching NarrativeReport exactly. No raw markdown outside the JSON fields."
-    ),
-)
-
 
 narrative_frontmatter_agent = Agent(
     MODEL,
@@ -708,3 +571,4 @@ narrative_section_agent = Agent(
         "- No markdown outside the JSON fields."
     ),
 )
+

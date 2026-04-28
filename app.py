@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import html
-import io
-import shutil
-import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -14,16 +11,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from core.agents import setup_logfire
-from core.cache import load_validation_results
 from cleaning.orchestrator import (
     _build_cleaning_requests,
     _resolve_remediation_plan,
 )
-from cleaning.paths import cleaned_dataset_path, final_report_path
+from cleaning.paths import cleaned_dataset_path
 from cleaning.reporting import (
     build_final_report,
     _generate_narrative_report_chunked,
-    narrative_report_path,
     save_final_report,
     save_narrative_report,
 )
