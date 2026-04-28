@@ -22,6 +22,9 @@ from core.models import (
     RemediationPlan,
 )
 
+from core.agents import narrative_frontmatter_agent, narrative_section_agent
+from tools.common_tools import attach_text_document, run_agent_with_backoff
+
 from .paths import cleaned_dataset_path, cleaning_cache_dir, final_report_path
 
 
@@ -491,9 +494,6 @@ def _build_narrative_section_specs(final_report: FinalPipelineReport) -> list[tu
 
 def _generate_narrative_report_chunked(final_report: FinalPipelineReport) -> NarrativeReport:
     '''Generates the narrative report in chunks using separate agents for frontmatter and body sections.'''
-    # Import the agents lazily because they are only needed when generating the narrative.
-    from core.agents import narrative_frontmatter_agent, narrative_section_agent
-    from tools.common_tools import attach_text_document, run_agent_with_backoff
 
     # Generate the title, executive summary, and recommendations first.
     frontmatter = run_agent_with_backoff(
