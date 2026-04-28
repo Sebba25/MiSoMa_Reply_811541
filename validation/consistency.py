@@ -16,6 +16,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 import pandas as pd
+import re
 
 from core.agents import format_consistency_agent
 from core.cache import load_consistency, load_schema_handoff, save_consistency
@@ -162,6 +163,21 @@ def _build_suggested_strategy(
     for shape, values in sorted(groups.items(), key=lambda x: -len(x[1])):
         examples = ", ".join(repr(v) for v in values[:5])
         lines.append(f"  shape '{shape}': e.g. {examples}")
+
+    if expected_pattern.strip().lower() == "yyyymm":
+        year_only_examples: list[str] = []
+        for values in groups.values():
+            for value in values:
+                stripped = str(value).strip()
+                if re.fullmatch(r"\d{4}", stripped) or re.fullmatch(r"[A-Za-z]+\s+\d{4}", stripped):
+                    year_only_examples.append(stripped)
+        if year_only_examples:
+            examples = ", ".join(repr(v) for v in year_only_examples[:5])
+            lines.append(
+                "\nMissing-month rule for YYYYMM period keys: "
+                f"when a value exposes a recoverable 4-digit year but no month, default the month to '01' instead of returning null. "
+                f"For example, convert {examples} using the visible year and append month '01' (e.g. 'Rata 2024' -> '202401')."
+            )
 
     lines.append(
         "\nEVERY value in example_inconsistent_values must be explicitly handled — "

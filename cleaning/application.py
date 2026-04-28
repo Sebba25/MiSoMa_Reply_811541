@@ -1,9 +1,10 @@
 """Applies remediation actions + generated cleaners to produce the cleaned CSV.
 
-Executes the remediation plan in order: column renames from schema,
-placeholder-to-null replacements from completeness, per-column cleaner
-programs, then the explicit dtype casts. Emits a ``CleaningReport`` with
-one ``ColumnCleanerExecutionReport`` per applied cleaner.
+Executes the remediation plan in order: generated column cleaners,
+placeholder-to-null replacements, exact duplicate column drops, schema-driven
+renames, dtype casts, string lowercasing, and exact duplicate row drops.
+Emits a ``CleaningReport`` with one ``ColumnCleanerExecutionReport`` per
+applied cleaner.
 """
 
 from __future__ import annotations
@@ -348,6 +349,61 @@ def _apply_exact_duplicate_column_drops(
     return df, unresolved_risks
 
 
+def _apply_exact_duplicate_row_drops(
+    df: pd.DataFrame,
+    actions: list[RemediationAction],
+) -> tuple[pd.DataFrame, int, list[str]]:
+    """Drop exact duplicate rows for auto-apply remediation actions.
+
+    The remediation planner encodes a deterministic keep rule per duplicate
+    group: preserve the first observed row and drop the later duplicates.
+    """
+    unresolved_risks: list[str] = []
+    row_indices_to_drop: set[int] = set()
+
+    for action in actions:
+        if action.action_type != "drop_exact_duplicate_rows" or not action.auto_apply:
+            continue
+
+        keep_row_index = action.target.get("keep_row_index")
+        drop_row_indices = action.target.get("drop_row_indices", [])
+        if keep_row_index is None or not isinstance(drop_row_indices, list):
+            action.status = "failed"
+            unresolved_risks.append(
+                f"Could not apply duplicate-row drop action {action.action_id!r} because its target payload is malformed."
+            )
+            continue
+
+        if keep_row_index not in df.index:
+            action.status = "failed"
+            unresolved_risks.append(
+                f"Could not apply duplicate-row drop action {action.action_id!r} because keep row {keep_row_index} is missing."
+            )
+            continue
+
+        valid_drop_row_indices = [
+            row_index
+            for row_index in drop_row_indices
+            if row_index in df.index and row_index != keep_row_index
+        ]
+        if not valid_drop_row_indices:
+            action.status = "not_needed"
+            continue
+
+        row_indices_to_drop.update(int(row_index) for row_index in valid_drop_row_indices)
+        action.status = "applied"
+        print(
+            f"  duplicate rows group kept row {keep_row_index} and scheduled {len(valid_drop_row_indices)} row(s) for drop",
+            file=sys.stderr,
+        )
+
+    if not row_indices_to_drop:
+        return df, 0, unresolved_risks
+
+    df = df.drop(index=sorted(row_indices_to_drop)).reset_index(drop=True)
+    return df, len(row_indices_to_drop), unresolved_risks
+
+
 def run_cleaner_application_with_plan(
     path: Path,
     remediation_plan: RemediationPlan | None = None,
@@ -545,6 +601,19 @@ def run_cleaner_application_with_plan(
             f"across {len(lowercased_by_column)} column{'s' if len(lowercased_by_column) != 1 else ''}"
         )
 
+    #Start step 7 logging
+    print("\n[apply] step 7 - exact duplicate row drops (from remediation plan)", file=sys.stderr)
+    _emit("step 7 — dropping exact duplicate rows")
+    if actions:
+        df, dropped_duplicate_rows, duplicate_row_risks = _apply_exact_duplicate_row_drops(df, actions)
+        unresolved_risks.extend(duplicate_row_risks)
+        if dropped_duplicate_rows:
+            print(f"  dropped {dropped_duplicate_rows} exact duplicate row(s)", file=sys.stderr)
+            _emit(f"  dropped {dropped_duplicate_rows} exact duplicate row(s)")
+    else:
+        dropped_duplicate_rows = 0
+        print("  no remediation plan loaded - skipping exact duplicate row drops.", file=sys.stderr)
+
     # Save the final cleaned dataframe to the cleaning cache directory
     output_dir = cleaning_cache_dir(path) #Get the cleaning cache directory
     output_dir.mkdir(parents=True, exist_ok=True) #Ensure the output directory exists
@@ -571,7 +640,8 @@ def run_cleaner_application_with_plan(
         cleaned_csv_gzip_base64=gzip_text_to_base64(df.to_csv(index=False)),
         summary=(
             f"Applied {len(applied_artifacts)} format cleaners, replaced {total_replaced} placeholder values, "
-            f"renamed {len(rename_map)} columns, cast dtypes, and lowercased {lowercased_total} string values. "
+            f"renamed {len(rename_map)} columns, cast dtypes, lowercased {lowercased_total} string values, "
+            f"and dropped {dropped_duplicate_rows} exact duplicate row(s). "
             f"Cleaned dataset saved to `{cleaned_path.as_posix()}`."
         ),
     )

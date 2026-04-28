@@ -89,7 +89,9 @@ def build_final_report(
     failed_actions = [action for action in remediation_plan.actions if action.status == "failed"]
     not_needed_actions = [action for action in remediation_plan.actions if action.status == "not_needed"]
     duplicate_row_drop_candidates = [
-        action for action in remediation_plan.actions if action.action_type == "drop_rows_candidate"
+        action
+        for action in remediation_plan.actions
+        if action.action_type in {"drop_rows_candidate", "drop_exact_duplicate_rows"}
     ]
     manual_review_queue = [
         action

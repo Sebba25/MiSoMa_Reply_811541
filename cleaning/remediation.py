@@ -280,26 +280,49 @@ def build_remediation_plan(validation_results: OrchestrationStepResult) -> Remed
     if validation_results.duplicate_detection is not None:
         #loops through duplicate groups and numbers them starting from 1.
         for index, group in enumerate(validation_results.duplicate_detection.groups, start=1):
-            #exact duplicate rows become drop_rows_candidate with medium confidence/risk
+            # Exact duplicate rows can be removed deterministically by keeping the
+            # first occurrence and dropping the remaining row indices in the group.
             if group.duplicate_type == "exact_row":
-                action_type = "drop_rows_candidate"
-                confidence = "medium"
-                risk_level = "medium"
+                keep_row_index = group.row_indices[0] if group.row_indices else None
+                drop_row_indices = group.row_indices[1:] if len(group.row_indices) > 1 else []
+                actions.append(
+                    RemediationAction(
+                        action_id=_action_id("drop_exact_duplicate_rows", index),
+                        action_type="drop_exact_duplicate_rows",
+                        object_type="row_group",
+                        target={
+                            "keep_row_index": keep_row_index,
+                            "drop_row_indices": drop_row_indices,
+                            "key_columns": group.key_columns,
+                        },
+                        source_check="duplicate_detection",
+                        confidence="high",
+                        risk_level="medium",
+                        auto_apply=True,
+                        status="planned",
+                        reason=(
+                            f"{group.evidence} Keep the first occurrence at row {keep_row_index} "
+                            f"and drop {len(drop_row_indices)} later duplicate row(s)."
+                        ),
+                        preview_stats={
+                            "group_size": len(group.row_indices),
+                            "drop_count": len(drop_row_indices),
+                            "key_columns": group.key_columns,
+                        },
+                    )
+                )
+                continue
             #other duplicate types become manual_review with low confidence and high risk
-            else:
-                action_type = "manual_review"
-                confidence = "low"
-                risk_level = "high"
             actions.append(
                 #creates the action, storing up to 20 row indices and key columns in the target
                 RemediationAction(
                     action_id=_action_id(group.duplicate_type, index),
-                    action_type=action_type,
+                    action_type="manual_review",
                     object_type="row_group",
                     target={"row_indices": group.row_indices[:20], "key_columns": group.key_columns},
                     source_check="duplicate_detection",
-                    confidence=confidence,
-                    risk_level=risk_level,
+                    confidence="low",
+                    risk_level="high",
                     auto_apply=False,
                     status="proposed_not_applied",
                     reason=group.evidence,

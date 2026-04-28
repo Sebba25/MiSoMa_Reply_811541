@@ -270,6 +270,7 @@ REMEDIATION_ACTION_TYPE = Literal[
     "replace_placeholders_with_null",
     "generate_cleaner",
     "drop_exact_duplicate_column",
+    "drop_exact_duplicate_rows",
     "cast_dtype",
     "manual_review",
     "report_only",

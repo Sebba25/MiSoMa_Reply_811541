@@ -67,6 +67,27 @@ def _augment_datetime_strategy(format_facts: Any, suggested_strategy: str) -> st
     return guidance + "\n\nExisting shape notes:\n" + suggested_strategy
 
 
+def _augment_yyyymm_strategy(example_inconsistent_values: list[str], suggested_strategy: str) -> str:
+    """Add an explicit missing-month rule for YYYYMM period keys when only the year is visible."""
+    year_only_examples: list[str] = []
+    for value in example_inconsistent_values:
+        stripped = str(value).strip()
+        if re.fullmatch(r"\d{4}", stripped) or re.fullmatch(r"[A-Za-z]+\s+\d{4}", stripped):
+            year_only_examples.append(stripped)
+    if not year_only_examples:
+        return suggested_strategy
+
+    example_text = ", ".join(repr(value) for value in year_only_examples[:5])
+    guidance = (
+        "YYYYMM missing-month rule:\n"
+        "- If the input contains a recoverable 4-digit year but no month, default the month to '01' instead of returning None.\n"
+        f"- Apply this to year-only shapes such as {example_text}.\n"
+        "- Example: 'Rata 2024' -> '202401' and 'Rata 2023' -> '202301'.\n"
+        "- Treat a visible year as recoverable information, not as an unrecoverable value."
+    )
+    return guidance + "\n\nExisting shape notes:\n" + suggested_strategy
+
+
 def build_column_cleaning_request(
     dataset_name: str, 
     column_name: str,
@@ -97,6 +118,8 @@ def build_column_cleaning_request(
     if target_dtype == "datetime64[ns]":
         expected_pattern = _build_datetime_expected_pattern(format_facts, expected_pattern)
         suggested_strategy = _augment_datetime_strategy(format_facts, suggested_strategy)
+    elif expected_pattern.strip().lower() == "yyyymm":
+        suggested_strategy = _augment_yyyymm_strategy(example_inconsistent_values, suggested_strategy)
 
     #starts creating and returning the final ColumnCleaningRequest object
     return ColumnCleaningRequest(
