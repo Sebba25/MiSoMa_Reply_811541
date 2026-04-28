@@ -317,6 +317,15 @@ def _build_narrative_section_specs(final_report: FinalPipelineReport) -> list[tu
         f"- duplicate_type={group.duplicate_type}, row_indices={group.row_indices[:8]}, key_columns={group.key_columns}, evidence={group.evidence}"
         for group in final_report.duplicate_groups
     ] or ["- No duplicate row groups were recorded."]
+    applied_duplicate_row_drop_actions = [
+        action
+        for action in final_report.applied_actions
+        if action.action_type == "drop_exact_duplicate_rows"
+    ]
+    dropped_exact_duplicate_rows = sum(
+        len(action.target.get("drop_row_indices", []))
+        for action in applied_duplicate_row_drop_actions
+    )
     duplicate_outcome_lines = [
         f"- dropped_exact_duplicate_rows={dropped_exact_duplicate_rows}",
         *[
