@@ -1609,8 +1609,8 @@ def view_pipeline() -> None:
             run_label = "Pipeline running…"
             st.markdown(
                 """<style>
-                .stButton > button[kind="primary"]:disabled,
-                .stButton > button[data-testid="baseButton-primary"]:disabled {
+                .stButton > button[kind="primary"],
+                .stButton > button[data-testid="baseButton-primary"] {
                     background: #e8896e !important;
                     color: #fff !important;
                     border: 1px solid #d4715a !important;
