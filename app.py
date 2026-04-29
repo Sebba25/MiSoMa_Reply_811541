@@ -10,23 +10,23 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from core.agents import setup_logfire
-from cleaning.orchestrator import (
+from src.core.agents import setup_logfire
+from src.cleaning.orchestrator import (
     _build_cleaning_requests,
     _resolve_remediation_plan,
 )
-from cleaning.paths import cleaned_dataset_path
-from cleaning.reporting import (
+from src.cleaning.paths import cleaned_dataset_path
+from src.cleaning.reporting import (
     build_final_report,
     _generate_narrative_report_chunked,
     save_final_report,
     save_narrative_report,
 )
-from cleaning.verification import run_verify
-from cleaning.application import run_cleaner_application_with_plan
-from cleaning.generation import run_cleaner_generation
-from core.models import FinalPipelineReport
-from validation import (
+from src.cleaning.verification import run_verify
+from src.cleaning.application import run_cleaner_application_with_plan
+from src.cleaning.generation import run_cleaner_generation
+from src.core.models import FinalPipelineReport
+from src.validation import (
     build_validation_results,
     run_anomaly_detection,
     run_completeness_analysis,

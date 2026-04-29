@@ -1,29 +1,26 @@
-# Core agent framework
-pydantic>=2.10
-pydantic-ai>=0.0.14
-
-# Data handling
+# Core runtime
 pandas>=2.2
 numpy>=1.26
+pydantic>=2.10
+pydantic-ai>=0.0.14
+openai>=1.30
 
-# Date parsing utilities
+# Date parsing used by generated cleaners
 python-dateutil>=2.9
 dateparser>=1.2
 
 # Environment + observability
 python-dotenv>=1.0
 logfire>=2.0
-nest-asyncio>=1.6
 
-# Notebook runtime
+# App + notebook runtime
+streamlit>=1.30
+nest-asyncio>=1.6
 ipython>=8.20
 jupyter>=1.0
 ipykernel>=6.29
 
-# Streamlit UI (app.py)
-streamlit>=1.30
-
-# Pipeline diagram rendering in the notebook
+# Optional notebook diagram support
+# Note: the Python package is not enough by itself; Graphviz system binaries
+# must also be installed and available on PATH to render diagrams.
 graphviz>=0.20
-plotly>=5.20
-
