@@ -386,6 +386,13 @@ class ColumnCleaningRequest(BaseModel):
     dominant_shape: str | None = None
     dominant_example_values: list[str] = Field(default_factory=list)
     example_inconsistent_values: list[str] = Field(default_factory=list)
+    enforce_year_only_yyyymm_january: bool = Field(
+        default=False,
+        description=(
+            "When true, recoverable year-only YYYYMM inputs such as 'Rata 2024' must default to January "
+            "during validation and may not be mapped to null."
+        ),
+    )
     suggested_strategy: str
 
 

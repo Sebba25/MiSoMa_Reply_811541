@@ -86,6 +86,19 @@ def matches_request_target_pattern(value: str, request: ColumnCleaningRequest) -
         detected_pattern=request.expected_pattern,
     )
 
+
+def expected_year_only_yyyymm_fallback(value: str, request: ColumnCleaningRequest) -> str | None:
+    """Return the exact YYYY01 fallback required for recoverable year-only YYYYMM inputs."""
+    if not request.enforce_year_only_yyyymm_january:
+        return None
+    stripped = str(value).strip()
+    if re.fullmatch(r"\d{4}", stripped):
+        return f"{stripped}01"
+    match = re.fullmatch(r"[A-Za-z]+\s+(\d{4})", stripped)
+    if match:
+        return f"{match.group(1)}01"
+    return None
+
 def _datetime_format_regex_from_example(example: str) -> re.Pattern[str] | None:
     '''Converts a datetime example string into a regex pattern that enforces the same visible layout of digits and separators.'''
     # This checks if the input string is empty or missing, if the example is empty, the function cannot build a useful regex, so it returns None
@@ -439,17 +452,48 @@ def validate_generated_cleaner_program(
 
     # Now loop through all inconsistent examples. Inconsistent examples should be normalized into the target format.
     for value in request.example_inconsistent_values:
+        # When the YYYYMM year-only fallback rule is active, the validator enforces
+        # the exact January default rather than relying on prompt text alone.
+        required_year_only_output = expected_year_only_yyyymm_fallback(value, request)
         try:
             cleaned = cleaner(value) #run the cleaner
         except Exception as error:
             #Add a runtime issue
             issues.append(build_runtime_exception_issue(stage_label="Inconsistent example", input_value=value, error=error))
             continue
-        #if cleaner returns None,skip further checks for that example
+        # Year-only recoverable YYYYMM values must not be dropped to null when the
+        # request explicitly activated the January fallback rule.
         if cleaned is None:
+            if required_year_only_output is not None:
+                issues.append(
+                    build_validation_issue(
+                        category="outlier_returned_none",
+                        severity="high",
+                        message=(
+                            f"Inconsistent example {value!r} was mapped to null, but the active YYYYMM year-only rule "
+                            f"requires the exact fallback {required_year_only_output!r}."
+                        ),
+                        input_value=value,
+                        expected_behavior=f"produce the exact fallback value {required_year_only_output!r}.",
+                    )
+                )
             continue
 
         cleaned_str = str(cleaned) #Convert the cleaned output to string
+        if required_year_only_output is not None and cleaned_str != required_year_only_output:
+            issues.append(
+                build_validation_issue(
+                    category="not_matching_target_pattern",
+                    severity="high",
+                    message=(
+                        f"Inconsistent example {value!r} cleaned to {cleaned_str!r}, but the active YYYYMM year-only rule "
+                        f"requires the exact fallback {required_year_only_output!r}."
+                    ),
+                    input_value=value,
+                    actual_output=cleaned_str,
+                    expected_behavior=f"produce the exact fallback value {required_year_only_output!r}.",
+                )
+            )
         # Flag any inconsistent example that was returned unchanged
         if cleaned == value:
             issues.append(

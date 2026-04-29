@@ -67,15 +67,18 @@ def _augment_datetime_strategy(format_facts: Any, suggested_strategy: str) -> st
     return guidance + "\n\nExisting shape notes:\n" + suggested_strategy
 
 
-def _augment_yyyymm_strategy(example_inconsistent_values: list[str], suggested_strategy: str) -> str:
-    """Add an explicit missing-month rule for YYYYMM period keys when only the year is visible."""
+def _augment_yyyymm_strategy(example_inconsistent_values: list[str], suggested_strategy: str) -> tuple[str, bool]:
+    """Add an explicit missing-month rule for YYYYMM period keys when only the year is visible.
+
+    Returns the augmented strategy plus a flag the validator can later enforce.
+    """
     year_only_examples: list[str] = []
     for value in example_inconsistent_values:
         stripped = str(value).strip()
         if re.fullmatch(r"\d{4}", stripped) or re.fullmatch(r"[A-Za-z]+\s+\d{4}", stripped):
             year_only_examples.append(stripped)
     if not year_only_examples:
-        return suggested_strategy
+        return suggested_strategy, False
 
     example_text = ", ".join(repr(value) for value in year_only_examples[:5])
     guidance = (
@@ -85,7 +88,7 @@ def _augment_yyyymm_strategy(example_inconsistent_values: list[str], suggested_s
         "- Example: 'Rata 2024' -> '202401' and 'Rata 2023' -> '202301'.\n"
         "- Treat a visible year as recoverable information, not as an unrecoverable value."
     )
-    return guidance + "\n\nExisting shape notes:\n" + suggested_strategy
+    return guidance + "\n\nExisting shape notes:\n" + suggested_strategy, True
 
 
 def build_column_cleaning_request(
@@ -113,13 +116,18 @@ def build_column_cleaning_request(
     expected_pattern = finding.expected_pattern
     #starts with the suggested cleaning strategy from the finding
     suggested_strategy = finding.suggested_strategy
+    # This stays false unless the YYYYMM year-only fallback rule is explicitly activated.
+    enforce_year_only_yyyymm_january = False
     #This checks if the target column type is a datetime column based on the schema information.
     # If it is, it applies datetime-specific logic, this replaces the normal expected pattern with a better datetime-specific one
     if target_dtype == "datetime64[ns]":
         expected_pattern = _build_datetime_expected_pattern(format_facts, expected_pattern)
         suggested_strategy = _augment_datetime_strategy(format_facts, suggested_strategy)
-    elif expected_pattern.strip().lower() == "yyyymm":
-        suggested_strategy = _augment_yyyymm_strategy(example_inconsistent_values, suggested_strategy)
+    elif expected_pattern.strip().lower().startswith("yyyymm"):
+        suggested_strategy, enforce_year_only_yyyymm_january = _augment_yyyymm_strategy(
+            example_inconsistent_values,
+            suggested_strategy,
+        )
 
     #starts creating and returning the final ColumnCleaningRequest object
     return ColumnCleaningRequest(
@@ -132,6 +140,6 @@ def build_column_cleaning_request(
         dominant_shape=format_facts.dominant_shape, #Adds the dominant structural shape of the values
         dominant_example_values=format_facts.dominant_example_values,
         example_inconsistent_values=example_inconsistent_values,
+        enforce_year_only_yyyymm_january=enforce_year_only_yyyymm_january,
         suggested_strategy=suggested_strategy,
     )
-
