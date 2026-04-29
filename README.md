@@ -133,7 +133,27 @@ This selectivity is essential. Not every variation should trigger cleaning. Free
 
 Anomaly detection is separated from format normalization because suspicious values are not automatically incorrect values. A large outlier, a rare category, or an unusual code may indicate corruption, but it may also represent a valid edge case. Automatic rewriting in such cases would be risky.
 
-The repository detects anomaly candidates deterministically in `src/tools/quality_tools.py`. Numeric outliers and rare categorical values are computed through local heuristics, and the `anomaly-summary` agent is used only to write a concise structured summary. The output is therefore interpretive rather than generative. It highlights potential risk signals that deserve attention, but it does not convert those signals directly into cleaning code.
+The repository detects anomaly candidates deterministically in `src/tools/quality_tools.py`. Numeric outliers and rare categorical values are not found by prompting an LLM, but by running explicit local rules over the schema-aware dataset representation. The `anomaly-summary` agent is used only afterward to write a concise structured summary of findings that have already been computed.
+
+The numeric detector applies only to columns that the schema stage has already classified as numeric measures. This means that numeric codes and indicators are excluded deliberately, because they may be numeric without behaving like continuous quantities. The detector also requires a minimum amount of evidence before it runs: at least 20 parseable numeric values and at least 10 distinct numeric values. Once those conditions are satisfied, the implementation computes the first quartile `Q1`, the third quartile `Q3`, and the interquartile range
+
+$$ IQR = Q3 - Q1 $$
+
+Then it defines a conservative outlier band
+
+$$ \text{lower} = Q1 - 3 \times IQR \quad;\quad \text{upper} = Q3 + 3 \times IQR$$
+
+Any value outside that interval is marked as an outlier candidate. The use of $3 \times IQR$ rather than the more aggressive $1.5 \times IQR$ is intentional: the project prefers to reduce false positives on naturally skewed public-administration measures. In other words, the detector is calibrated to surface suspicious extremes, not to flag every moderately unusual value. The severity is then set to `high` when the outlier rows are at least 2 percent of the dataset and `medium` otherwise.
+
+The rare-category detector follows a different logic because it is designed for low- to moderate-cardinality textual columns rather than for numeric distributions. It applies only to columns whose dtype family is textual and whose schema role is not `free_text`, `name`, or `identifier`. Placeholder tokens are removed first so that missing-like noise does not become an apparent category. The detector then checks that the column is suitable for this heuristic at all. It is skipped if the number of distinct labels is below 5, above 50, or so diverse that the distinct-value ratio exceeds 20 percent of the non-null rows. It is also skipped if the most common category occupies less than 20 percent of the column, because in that case the column has no stable baseline from which "rare" can be defined meaningfully.
+
+If the column passes those eligibility checks, the threshold for rarity is computed as
+
+$$ \text{rare_threshold} = \max(1, \lfloor 0.005 \times n \rfloor) $$
+
+where `n` is the number of non-null, non-placeholder rendered values in the column. Every category whose frequency is less than or equal to that threshold is treated as a rare-category candidate. The total number of rows covered by those rare labels becomes the affected-row count. The severity is set to `medium` when at most 5 rows are affected and `low` otherwise, because rare labels are treated as weak anomaly signals rather than as strong evidence of error.
+
+One additional implementation detail matters here. Before the final anomaly report is assembled, `src/validation/anomaly.py` suppresses duplicate-semantic aliases that were already identified in the schema handoff. This prevents the same anomaly from being reported twice merely because the dataset contains two columns that normalize to the same meaning. The output of the stage is therefore interpretive rather than generative. It highlights potential risk signals that deserve attention, but it does not convert those signals directly into cleaning code.
 
 ### 2.10 Cross-Column Validation and Duplicate Detection
 
