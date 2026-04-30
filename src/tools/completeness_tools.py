@@ -5,9 +5,7 @@ such as ``n/a`` or ``-``, and assembles the dataset-level profile that is
 handed to the completeness analysis agent."""
 
 from __future__ import annotations
-
 from pydantic import BaseModel, Field
-
 from src.tools.common_tools import PLACEHOLDER_TOKENS
 
 
@@ -42,10 +40,8 @@ class CompletenessProfile(BaseModel):
 
 
 # Completeness Helpers
-
 def compute_missing_like_mask(series) -> object:
     """Return a boolean mask for values that should count as missing-like.
-
     Treats true nulls, empty strings, and normalized placeholder tokens as
     equivalent missingness signals for completeness scoring.
     """
@@ -53,10 +49,8 @@ def compute_missing_like_mask(series) -> object:
     rendered = series.fillna("").astype(str).str.strip().str.lower()
     return rendered.isin(PLACEHOLDER_TOKENS)
 
-
-def sample_placeholder_examples(series, limit: int = 5) -> list[str]:
+def sample_placeholder_examples(series) -> list[str]:
     """Collect a few distinct raw placeholder spellings from a column.
-
     Preserves the original rendered token (for example ``"N/A"`` instead of
     ``"n/a"``) so downstream summaries can show concrete evidence from the data.
     """
@@ -70,10 +64,7 @@ def sample_placeholder_examples(series, limit: int = 5) -> list[str]:
         # De-duplicate while preserving first-seen order so examples stay readable.
         if original not in examples:
             examples.append(original)
-        if len(examples) >= limit:
-            break
     return examples
-
 
 def detect_placeholder_values(df) -> list[str]:
     """Return all distinct placeholder spellings found anywhere in the dataset."""
@@ -89,7 +80,6 @@ def detect_placeholder_values(df) -> list[str]:
 
 
 # Profile Builder
-
 def build_completeness_profile(df, dataset_name: str) -> CompletenessProfile:
     """Build the dataset-level completeness profile from a raw DataFrame.
 

@@ -8,7 +8,7 @@ The **central idea** is that data quality should not be treated as a single undi
 
 The **repository** contains both **implementation code** and **explanatory material**. The notebook `main.ipynb` is intended to present the workflow in a readable, didactic manner. The **command-line entrypoint** in `src/entrypoints/` and the **Streamlit application** in `app.py` expose the same underlying pipeline for operational execution. The code is therefore not centered on the notebook alone: the **real system logic** resides in the modules under `src/core/`, `src/tools/`, `src/validation/`, `src/cleaning/`, and `src/entrypoints/`.
 
-## Section 1. Introduction  Parte di sofia 
+## Section 1. Introduction
 
 ### 1.1 Project Context and Institutional Setting
 
@@ -110,11 +110,13 @@ The **same interface exposes additional stages** such as `schema`, `completeness
 
 ### 2.1 General System Architecture
 
-The **overall architecture** is based on a **strict separation** between inspection, diagnosis, remediation planning, transformation, and verification. This choice reflects the view that in order to obtain a good result, the **optimal approach** is **dividi et impera**
+The **overall architecture** is based on a **strict separation** between inspection, diagnosis, remediation planning, transformation, and verification. This choice reflects the view that heterogeneous data-quality problems are handled more safely when the workflow is decomposed into narrower stages with explicit responsibilities.
 
 The workflow begins by **loading a dataset and building deterministic evidence about it**, then **translating those observations** into **structured findings**. Only after those have been formalized does the **system decide whether a corrective action is justified**. When executable **cleaning logic is needed**, the latter is **generated under a narrow contract** and is **validated by the host system** before being trusted. After application, the **dataset is checked again** to confirm that the **targeted issue was actually reduced**.
 
 This architecture serves **two purposes**. The first is **technical safety**. If one stage fails, the failure can be localized instead of contaminating the rest of the workflow invisibly. The second is **interpretability**. Because every stage emits a specific typed artifact, the intermediate state of the system can be inspected, cached, reloaded, and discussed both in the notebook and in the final report.
+
+Conceptually, the repository can be read as a **four-layer architecture**. The **first layer** is the **contract layer**, in which Pydantic models define the typed artifacts exchanged across stages. The **second layer** is the **deterministic evidence-building layer**, in which local Python code measures parse rates, shapes, placeholders, duplicates, and anomalies without asking the model to rediscover raw facts. The **third layer** is the **agent layer**, where LLMs are used only for narrow interpretive or generative tasks that benefit from bounded reasoning. The **fourth layer** is the **host-side enforcement layer**, which remains the final authority whenever generated outputs must be validated before acceptance. This decomposition is important because it explains why the pipeline remains both flexible and auditable: interpretation is delegated selectively, while structure, evidence, and final acceptance stay under explicit programmatic control.
 
 ![High-level pipeline overview](images/flow_diagrams/DataFlowPipeline.gv.png)
 
@@ -141,17 +143,17 @@ The Logfire trace shown above is aligned with this description. It displays **in
 
 **Observability tracing is opt-in and credential-gated**. Logfire instrumentation is activated only when a `LOGFIRE_TOKEN` environment variable is present. If the token is absent, the pipeline runs in full without any tracing side effects. This means that the system can be executed in a minimal environment with only an `OPENAI_API_KEY`, and tracing can be enabled separately when a Logfire project is configured. The `.env` file shown in the repository structure (Section 1.5) is the intended location for both credentials. When Logfire is active, every agent invocation, tool call, retry attempt, and stage transition is recorded as a structured span, which makes it possible to audit exactly what the pipeline did during a run, at what cost, and where failures or retries occurred.
 
-### 2.6 Detailed Pipeline Stages
+### 2.5 Detailed Pipeline Stages
 
 The following subsections describe the ordered validation, remediation, cleaning, verification, and reporting stages that make up the operational pipeline.
 
-#### 2.6.1 Data Ingestion and Initial Framing
+#### 2.5.1 Data Ingestion and Initial Framing
 
 The **dataset** is loaded into a pandas dataframe and becomes the **authoritative input for validation**. This first operational step matters because every later stage assumes that the dataframe, rather than a free-form textual description of the dataset, is the real object being inspected. The pipeline therefore begins from a concrete tabular state, not from a vague prompt such as "clean this CSV."
 
 In the **verification stage**, the **cleaned output may be re-read** as **strings** so that formatting **differences** are **not hidden by automatic dtype normalization**. This detail is important because the **project evaluates** not only semantic compatibility but also whether the **cleaned values respect the intended canonical representation**. In other words, the **system** is **not satisfied** by a **value that merely parses**; it also **cares** whether the **value has been normalized into the correct target form**.
 
-#### 2.6.2 Schema Validation
+#### 2.5.2 Schema Validation
 After the raw dataframe has been loaded and framed, **schema validation** becomes the **first domain-facing stage**. Its **purpose** is to **establish what each column is supposed** to **represent after cleaning**, rather than merely describing how the raw values happened to be stored. This **distinction is fundamental**. A column may be loaded as strings while still being, in substance, a date field or a numeric field corrupted by a minority of messy values. What the **system tries to understand** is what a **certain column is meant to represent rather than how it happens to be encoded** in the raw data. The **schema handoff makes this visible** in a concrete way.
 
 Each column that passes through the schema stage produces a `SchemaHandoff` entry (see the JSON artifact later in this section). The most important fields in that entry are `pandas_dtype`, which is the inferred target dtype after cleaning, and `detected_pattern`, which is the canonical form the cleaned values should follow. Both fields are produced by the `dtype-inference` agent from the bounded column profile. The table below maps those fields back to concrete columns from the two evaluation datasets.
@@ -205,7 +207,7 @@ This **hybrid design is deliberate**. **Parse rates and naming rules** are **str
       "naming_reason": "Column name contains uppercase letters, which violates the lowercase snake_case naming rule."
     }
 
-#### 2.6.3 Completeness Analysis
+#### 2.5.3 Completeness Analysis
 
 Completeness analysis exists because **missingness in real datasets is often disguised**. A naive null count is usually insufficient. 
 
@@ -234,7 +236,7 @@ The **role of the agent** at this stage is not to discover missingness independe
     }
 
 
-#### 2.6.4 Format Consistency Validation
+#### 2.5.4 Format Consistency Validation
 
 **Format consistency validation** is the **stage that connects diagnosis to executable cleaning**. Its **purpose** is to **identify columns whose values are semantically similar but structurally inconsistent** in ways that justify normalization. Typical examples include mixed date layouts, mixed encodings for period identifiers, or numeric fields that include punctuation or textual noise.
 
@@ -283,7 +285,7 @@ This **selectivity is essential**. **Not every variation should trigger cleaning
     }
 
 
-#### 2.6.5 Anomaly Detection
+#### 2.5.5 Anomaly Detection
 
 **Anomaly detection** is **separated from format normalization** because **suspicious values are not automatically incorrect values**. A large outlier, a rare category, or an unusual code may indicate corruption, but it may also represent a **valid edge case**. **Automatic rewriting** in such cases would be **risky**.
 
@@ -309,7 +311,7 @@ where `n` is the number of non-null, non-placeholder rendered values in the colu
 
 One additional implementation detail matters here. Before the final anomaly report is assembled, `src/validation/anomaly.py` **suppresses duplicate-semantic aliases** that were already identified in the schema handoff. This **prevents the same anomaly from being reported twice** merely because the dataset contains two columns that normalize to the same meaning. The output of the stage is therefore interpretive rather than generative. It **highlights potential risk signals that deserve attention**, but it does **not convert those signals directly into cleaning code**.
 
-#### 2.6.6 Cross-Column Validation and Duplicate Detection
+#### 2.5.6 Cross-Column Validation and Duplicate Detection
 
 **Data quality cannot be understood only by inspecting each column independently**. A dataset may contain columns that **look reasonable in isolation and still contradict one another when compared**. Similarly, **row-level redundancy** introduces a **different class of quality issue** from format inconsistency.
 
@@ -346,7 +348,7 @@ The **duplicate stage** follows the same philosophy at row level. **Exact duplic
     }
 ```
 
-#### 2.6.7 Validation Bundling and Remediation Planning
+#### 2.5.7 Validation Bundling and Remediation Planning
 
 After schema, completeness, consistency, anomaly, cross-column, and duplicate analyses have been completed, the **outputs are bundled into a unified validation artifact**. This bundling is necessary because the cleaning half of the pipeline should consume one coherent view of the dataset rather than several loosely connected reports.
 
@@ -402,7 +404,7 @@ The **remediation planner** in remediation.py converts the validation bundle int
 
 **Findings** that are **more ambiguous**, such as anomalies, near-duplicate columns, semantic conflicts, temporal mismatches, date-order violations, or near-duplicate rows, are **converted** into `manual_review` or `report_only` actions instead of being executed automatically. This policy is especially important because the s**ystem has no guaranteed knowledge of the final analytical purpose of the dataset**. A suspicious row, an anomaly, a disagreement between semantically similar columns, or a rare category may be simple noise, a dirty entry, a legacy encoding, or genuinely meaningful information that should be preserved because it could be useful or interesting for further analysis. Since that contextual knowledge is not available inside the raw dataset itself, the **pipeline adopts a conservative intervention strategy**: clear and low-risk transformations can be automated, but ambiguous findings are redirected to manual review rather than modified directly. The underlying principle is that, when the downstream purpose of the data is unknown, it is safer to surface uncertainty than to erase potentially meaningful information.
 
-#### 2.6.8 Cleaning Request Construction
+#### 2.5.8 Cleaning Request Construction
 
 A **format-consistency finding** is not, by itself, a **sufficient contract for code generation**. Before code can be generated safely, the **system must construct a richer object** that states what the correct target looks like, which examples must remain unchanged, which examples must be transformed or nulled, and which output dtype the generated function must respect. This role is performed by the **cleaning request builder** in `src/cleaning/request.py` and related orchestration logic. 
 
@@ -434,7 +436,7 @@ A **format-consistency finding** is not, by itself, a **sufficient contract for 
 
 The resulting `ColumnCleaningRequest` is the **direct interface between validation and generation**. It is **particularly important for datetime-like columns**, where careless branch logic can easily damage values that were already valid. For example, a naive cleaner that rewrites any date-looking string could take an already valid value such as `2024-03-11T02:01:04.421`, drop the original time component and fractional seconds, or even reorder the date parts incorrectly while trying to normalize outliers such as `11/01/2024` or `11-11-24`. The **request object makes the preservation requirement explicit instead of leaving it implicit**. These bounded examples are later reused by the host-side validator, but they are no longer the only acceptance check: before a cleaner is accepted, the repository also performs a **full-column local dry run** on the target column, skipping nulls and placeholder-like tokens that belong to later cleaning stages.
 
-#### 2.6.9 Cleaner Generation, Critic Loop, and Stagnation Control
+#### 2.5.9 Cleaner Generation, Critic Loop, and Stagnation Control
 
 **Executable cleaning logic** is generated only for columns where the **repository has already established that a narrow normalization target exists**. For each `ColumnCleaningRequest`, the `column-cleaner-generator` agent is asked to **produce one self-contained Python function** that receives a scalar value and returns either a cleaned string or `None`. The generator begins from the same **`temperature = 0` baseline** used by the main operational agents, so that runs over the same bounded request remain as reproducible as possible unless the loop later detects stagnation.
 
@@ -448,13 +450,13 @@ The repository also contains a **stagnation mechanism**. This mechanism exists b
 
 This figure belongs here because it captures the **most delicate control loop of the cleaning half**: bounded self-testing, host-side acceptance checks, critic-guided repair, and stagnation handling. In particular, it makes clear that **code generation is not a single-shot step**, but a controlled loop whose output is accepted only after external validation.
 
-#### 2.6.10 Cleaner Application and Verification
+#### 2.5.10 Cleaner Application and Verification
 
 Once the **remediation plan** and the **accepted cleaners** are available, the **application stage executes the actions in a specific order**. **Generated cleaners are applied first** while the original column identities are still intact. Placeholder-to-null actions, exact duplicate-column drops, renames, and dtype casts follow in sequence. This ordering is important because an **early rename or cast could interfere with later steps** that still rely on the original structural assumptions.
 
 **Application alone**, however, **is not treated as success**. After the cleaned CSV is produced, the **verification stage** in `src/cleaning/verification.py` **re-runs consistency analysis and compares the new findings against the original ones**. The result is a **structured assessment** of whether each targeted issue was resolved, improved, left unchanged, or regressed. **Verification** is one of the **strongest safeguards** in the repository because it **prevents the system from equating successful code generation with successful data-quality improvement**.
 
-#### 2.6.11 Final Reporting
+#### 2.5.11 Final Reporting
 
 The repository **separates factual aggregation from narrative explanation**. Once **validation, remediation, cleaning, and verification outputs** exist, `src/cleaning/reporting.py` builds a `FinalPipelineReport`, which functions as the **canonical factual summary of the run**. **Only after this factual object exists** does the **narrative layer generate a human-readable report** through the `narrative-frontmatter` and `narrative-section` agents.
 
@@ -466,7 +468,7 @@ This **separation is methodologically important**. It ensures that the **final p
 
 The **prompt strategy** follows the same engineering logic. The prompt does not try to let the model "do everything." Instead, each agent prompt tries to **narrow the task to one operational responsibility**, define which evidence is authoritative, state what the model must not invent, and force the reply into a typed output contract. In practice, the schema prompt tries to infer a cleaned dtype from bounded profiling evidence, the consistency prompt tries to decide whether an inconsistency is truly actionable, and the generator prompt tries to write one cleaning function that satisfies an explicit contract rather than improvising a free-form remediation plan. The purpose of the prompt is therefore **to constrain the model into a small role inside the pipeline**, not to replace the pipeline itself.
 
-The **prompt design** is also **intentionally token-conscious**. The **system generally does not send full raw columns to the model**. It sends **bounded profiles**, **capped samples**, **representative examples**, and **structured local facts**. This **reduces cost** and **encourages the model to reason over distilled evidence rather than over long noisy inputs**. The **code-execution capability** is enabled only for the `completeness-analysis` and `column-cleaner-generator` agents, and even there it is **bounded**. The repository therefore **uses tool execution as a narrow controlled capability rather than as a free-form sandbox**.
+The **prompt design** is also **intentionally token-conscious**. The **system generally does not send full raw columns to the model**. It sends **bounded profiles**, **capped samples**, **representative examples**, and **structured local facts**. This **reduces cost** and **encourages the model to reason over distilled evidence rather than over long noisy inputs**. The **code-execution capability** is enabled only for the `completeness-analysis` and `column-cleaner-generator` agents, and even there it is **bounded**. The repository therefore **uses tool execution as a narrow controlled capability rather than as a free-form sandbox**. In particular, the cleaner generator may use sandboxed execution to test a candidate function on bounded examples, but this self-test is **not** the final acceptance criterion: the decisive authority remains the later **host-side validator**, which re-checks the returned code deterministically before any cleaner is trusted.
 
 Another important design choice is the default use of **`temperature = 0`** for the main operational agents in `src/core/agents.py`, including schema inference, completeness analysis, format consistency, and cleaner generation. The reason is not that the outputs become literally mathematically deterministic in every circumstance, but that the repository wants them to be **as stable and reproducible as possible** when the same bounded evidence is presented again. In this project, unnecessary variation is usually harmful: a small gratuitous change in inferred dtype, cleaning rationale, or branch structure can propagate downstream into validation mismatches, different remediation decisions, or harder-to-debug retry behavior. For that reason, the default prompt configuration is deliberately conservative. Only when the cleaning loop detects **stagnation** does the system intentionally relax that setting and raise temperature to encourage a meaningfully different repair attempt.
 
@@ -544,43 +546,7 @@ Third, the repository adopted a stronger separation between factual reporting an
 
 ## 3.7 Summary of the Experimental Logic
 
-Taken together, these experiments do not represent a classical benchmark-only evaluation. Instead, they document the iterative process through which the repository’s final contribution emerged: a token-conscious, safety-oriented, auditable LLM cleaning pipeline whose architecture was refined in response to concrete cost, reliability, and validation problems observed during development.
-
-## Section 3. Experimental Design
-
-### 3.1 Experimental Goal
-
-The experimental goal of the project is to evaluate whether the pipeline can improve the quality of heterogeneous tabular data in a controlled and verifiable way. The emphasis is not only on whether the system produces modifications, but on whether it produces justified modifications whose effects can be measured after application. In practical terms, the experiments are meant to validate the usefulness of the staged architecture itself: deterministic inspection, structured diagnosis, constrained code generation, and post-application verification.
-
-### 3.2 Datasets and Evaluation Scope
-
-The repository currently contains at least two datasets that can be used for evaluation: `Data/spesa.csv` with 7,543 rows and 18 columns, and `Data/attivazioniCessazioni.csv` with 20,102 rows and 19 columns. Both are suitable for the project because they are large enough to contain meaningful variation and because they reflect the kind of administrative data for which mixed encodings, placeholders, duplicates, and inconsistent formatting are realistic concerns.
-
-The evaluation scope is column- and dataset-level rather than row-label supervised. The pipeline does not assume that a gold cleaned version of the dataset already exists. Instead, it evaluates the quality of the process through the findings detected, the actions proposed, the cleaners accepted, and the before-versus-after verification outcomes.
-
-### 3.3 Baselines
-
-This subsection is kept explicitly visible because the course guidelines require baseline discussion, but the final baseline implementation is not yet fixed in the current repository state. At present, the README can only state the intended comparison logic. A meaningful baseline should isolate what the agentic architecture contributes beyond simpler alternatives.
-
-At least three baseline families are natural candidates. The first is a deterministic-only baseline that applies static cleaning rules without LLM interpretation. The second is a direct single-prompt baseline in which one model is asked to clean the dataset without the staged architecture. The third is a validation-only baseline in which the system produces findings but does not generate executable cleaners. The final README version should report whichever of these baselines is actually implemented and measured in the final experiments.
-
-### 3.4 Evaluation Metrics
-
-This subsection is also kept explicit rather than omitted, because the final repository must explain not only what was measured but why those measurements are relevant. The current pipeline already suggests a metric structure even though the final aggregated table has not yet been frozen.
-
-The most relevant measurements are the number of schema issues detected, the number of columns with hidden missingness, the number of actionable format findings, the number of anomaly findings, the number of cross-column findings, the number of duplicate groups, the number of cleaning requests, the number of accepted cleaners, the fraction of cleaners accepted on the first pass, and the verification outcomes classified as resolved, improved, unchanged, or regressed. Additional engineering metrics such as retry counts, tool usage, token consumption, and estimated cost are also meaningful because the project studies an agentic system rather than only a static data transformation.
-
-### 3.5 Experimental Procedure
-
-A full experiment should follow the actual structure of the pipeline. The raw dataset should first be passed through validation. The resulting findings should then be bundled into a remediation plan. Where needed, cleaning requests should be generated and converted into candidate cleaners. Accepted cleaners should then be applied to the dataset, and the output should be re-evaluated by the verification stage. Finally, the run should be summarized through the final structured report and, optionally, the narrative reporting layer.
-
-This procedure is appropriate because it evaluates the project as an end-to-end system rather than as a collection of isolated modules. At the same time, it preserves enough internal structure that failures can be localized. If a run performs poorly, it becomes possible to determine whether the problem originated in diagnosis, remediation planning, code generation, application, or verification.
-
-### 3.6 Current Status of the Experimental Setup
-
-The current repository already implements the main execution path needed for the experiments, including stage-wise CLI execution and final report generation. What is still pending is the final aggregation and presentation of formal baselines, consolidated quantitative metrics, and final result figures or tables generated from code for the submission-ready README.
-
-For this reason, the present document keeps the experimental design fully visible but does not overclaim completed evaluation artifacts that are not yet finalized. This is preferable to removing the section, because it preserves the academic structure required by the course while making the current project status explicit.
+Taken together, these experiments do not represent a classical benchmark-only evaluation. Instead, they document the iterative process through which the repository's final contribution emerged: a token-conscious, safety-oriented, auditable LLM cleaning pipeline whose architecture was refined in response to concrete cost, reliability, and validation problems observed during development.
 
 ## Section 4. Results
 
@@ -598,8 +564,6 @@ The second pattern is that accepted cleaners concentrate on a narrow subset of c
 
 ![Accepted cleaner impact by column](images/findings/04_cleaner_impact.png)
 
-![Targeted format inconsistencies before and after cleaning](images/findings/03_verification_before_after.png)
-
 This concentration is informative because it reveals where the architecture is strongest. Once the validation layer can define a narrow normalization objective, cleaner generation becomes both more reliable and more verifiable; by contrast, semantically ambiguous columns remain relatively untouched. The post-application reduction of the targeted inconsistencies to zero therefore matters less as an isolated metric than as evidence of the intended trade-off: automation is granted only where preservation constraints and verification criteria are strong enough to make the intervention defensible.
 
 ### 4.2 Token Usage and System Costs
@@ -610,15 +574,44 @@ The Logfire traces indicate that computational effort is not distributed uniform
 
 ![Logfire model cost dashboard](images/logfire/04_agents_dashboard.png)
 
+The same traces also clarify why the total cost remains analytically relevant even though it is modest in absolute terms. The key point is not only that the observed run cost is about **$0.0704**, but that this cost was achieved while still relying on a capable model-driven reasoning layer. The architecture makes that feasible because expensive calls are reserved for narrow, information-dense tasks rather than for indiscriminate full-dataset prompting. The implication is that cost efficiency is produced by architectural filtering: deterministic stages absorb the bulk of raw inspection work, and the model is invoked only after the search space has already been compressed into actionable questions.
+
 ![Logfire agent activity cards](images/logfire/05_agents_costs_tokens.jpeg)
+
+The division of cost across agents reinforces the same interpretation. The **`column-cleaner-generator`** is the dominant cost center at about **$0.03** over **10 runs**, which means that the main budget is spent where the system performs the most difficult task: synthesizing executable repairs under preservation constraints. The **`narrative-section`** agent is the next visible recurring contributor at about **$0.01**, while the **`cleaner-repair-critic`** remains below **$0.01** despite multiple calls, indicating that diagnosis is cheaper than generation. The remaining validation and summary agents are individually negligible, each staying below that threshold. The implication is that the pipeline does not spend money evenly across all stages; it concentrates spending where semantic reasoning and code synthesis are genuinely necessary, while keeping descriptive and diagnostic support comparatively light.
+
+This cost profile is consistent with the system design. Deterministic validators do not consume LLM budget at all, because they are local Python stages that inspect data and apply explicit rules. The expensive part begins only when the repository asks the model to synthesize executable repairs that must preserve already-valid values and then survive host-side checks. The trade-off is therefore not between low cost and high capability in the abstract, but between a narrowly targeted use of a powerful model and a much less disciplined architecture that would have allowed token usage to scale with raw data exposure instead of with validated cleaning opportunities.
+
+### 4.3 Time Distribution of Model Activity
 
 ![Logfire trace of individual calls and durations](images/logfire/07_agents_calls.png)
 
-This cost profile is consistent with the system design. Deterministic validators are cheap because they only inspect data and apply explicit rules; the expensive part begins when the repository asks the model to synthesize executable repairs that must preserve already-valid values and then survive host-side checks. The implication is that token usage should be interpreted as the cost of constrained correction, not of generic inspection.
+The temporal trace indicates that the system remains fast in wall-clock terms even though its exact runtime is not fully deterministic. What stands out is the clustering of activity: the early validation and summary agents complete quickly, while the longer delays accumulate only once the pipeline reaches cleaner generation and, in some cases, re-enters the repair cycle. This pattern is expected, because the system spends very little time deciding whether an issue exists and more time when it must produce a safe executable correction.
 
-The same traces also clarify why the total cost remains analytically relevant even though it is modest in absolute terms. A run cost of roughly **$0.0704** is low enough to support the claim that the additional control layers are operationally plausible, but the repeated generator and critic calls make clear that this plausibility is purchased through extra interaction overhead. The trade-off is explicit: auditability, retry control, and failure containment require more model calls than a one-shot cleaner, but they reduce the risk of silent destructive edits that would otherwise be harder to detect.
+The same trace also suggests that retry variability does not expand into uncontrolled latency. The repository supports bounded parallel workers for independent column-level agent tasks, so runtime is influenced less by the sum of all per-column calls than by the slowest active branch in a stage. The implication is that the system gains speed through orchestration rather than through simplification: it does not remove the critic loop or the verification logic in order to appear fast, but contains their time cost by overlapping independent work where the architecture allows it. The trade-off is that exact runtime can fluctuate from run to run when different columns trigger different numbers of retries, yet the overall process remains fast enough to be operationally plausible because concurrency prevents that variability from compounding linearly.
 
-### 4.3 Comparison with the Raw Dataset
+### 4.4 Summary of Run Outcomes
+
+The table below consolidates the quantitative outcomes of the end-to-end run on `spesa.csv`, extracted from the cached pipeline artifacts.
+
+| Metric | Value |
+|--------|-------|
+| Raw rows | 7,543 |
+| Cleaned rows | 7,502 |
+| Raw missing-like cells | 17,811 |
+| Cleaned missing-like cells | 17,752 |
+| Raw exact duplicate rows | 41 |
+| Cleaned exact duplicate rows | 0 |
+| Accepted cleaners | 6 |
+| Rows changed by cleaners | 1,848 |
+| Targeted inconsistent rows before cleaning | 1,487 |
+| Targeted inconsistent rows after cleaning | 0 |
+| Overall reduction on targeted inconsistencies | 100.00% |
+| Applied actions | 71 |
+
+The reduction from 1,487 targeted inconsistent rows to 0 should be read together with the conservative intervention policy described in Section 4.1: auto-application is restricted to findings where the normalization target is unambiguous and verifiable. The modest decrease in missing-like cells (17,811 to 17,752) reflects the same conservatism — the pipeline standardizes how absence is represented rather than fabricating fill values. The row count reduction from 7,543 to 7,502 is explained entirely by exact duplicate removal.
+
+### 4.5 Comparison with the Raw Dataset
 
 The dataset-level comparison reveals a clear imbalance between structural improvement and aggregate missingness reduction. The strongest changes occur in defects for which the repository can impose a canonical representation without introducing new semantic assumptions.
 

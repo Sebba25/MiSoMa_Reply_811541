@@ -11,7 +11,6 @@ specialized tool modules small and consistent.
 """
 
 from __future__ import annotations
-
 import asyncio
 import base64
 import gzip
@@ -21,7 +20,6 @@ from pathlib import Path
 import re
 import sys
 import time
-
 import pandas as pd
 from pydantic import BaseModel
 from pydantic_ai import Agent
@@ -47,12 +45,10 @@ except ImportError:  # pydantic-ai 0.8.x does not expose this stream event
     PartEndEvent = ()
 
 # Shared Constants
-
 PLACEHOLDER_TOKENS = ("", "na", "n/a", "null", "none", "-", "--", "unknown", "n.d.", "?", "//")
 
 
 # Shared Attachment And I/O Helpers
-
 def attach_text_document(text: str) -> BinaryContent:
     """Wrap plain text as a BinaryContent document for pydantic-ai prompts."""
     return BinaryContent(data=text.encode("utf-8"), media_type="text/plain")
@@ -62,21 +58,18 @@ def attach_profile_text(profile: BaseModel) -> BinaryContent:
     """Serialize a Pydantic model to JSON and attach it as a text document."""
     return attach_text_document(profile.model_dump_json(indent=2))
 
-
 def load_dataset_frame(path: Path, dtype: str | dict | None = None) -> pd.DataFrame:
     """Load one CSV dataset into a pandas DataFrame with an optional dtype override."""
     return pd.read_csv(path, dtype=dtype)
 
 
 # Shared Encoding Helpers
-
 def gzip_text_to_base64(text: str) -> str:
     """Compress text with gzip and return an ASCII-safe base64 string."""
     return base64.b64encode(gzip.compress(text.encode("utf-8"))).decode("ascii")
 
 
 # Shared Profiling Helpers
-
 def sample_non_null_values(series: pd.Series, limit: int = 5) -> list[str]:
     """Collect a few distinct rendered non-null values from a series."""
     values: list[str] = []
@@ -93,7 +86,6 @@ def sample_non_null_values(series: pd.Series, limit: int = 5) -> list[str]:
 
 def value_shape(value: str) -> str:
     """Convert a value into its structural shape signature.
-
     Digits become ``9``, letters become ``A``, and punctuation is preserved,
     so values with the same layout map to the same canonical shape.
     """
@@ -107,7 +99,6 @@ def value_shape(value: str) -> str:
             parts.append(char)
     return "".join(parts)
 
-
 def compute_numeric_parse_pct(series: pd.Series) -> float:
     """Return the percentage of non-empty rendered values parseable as numeric."""
     non_null = series.dropna()
@@ -120,10 +111,8 @@ def compute_numeric_parse_pct(series: pd.Series) -> float:
     parsed = pd.to_numeric(rendered, errors="coerce")
     return float((parsed.notna().mean()) * 100)
 
-
 def compute_datetime_parse_pct(series: pd.Series) -> float:
     """Return the percentage of rendered values that look and parse like datetimes.
-
     A lightweight signal mask is applied first so arbitrary text is not sent
     wholesale into pandas datetime parsing.
     """
@@ -149,7 +138,6 @@ def compute_datetime_parse_pct(series: pd.Series) -> float:
     parsed = pd.to_datetime(candidates, errors="coerce", format="mixed")
     return float((parsed.notna().sum() / len(rendered)) * 100)
 
-
 def compute_empty_like_pct(series: pd.Series) -> float:
     """Return the share of rows that are null-like or placeholder-like."""
     if series.empty:
@@ -158,11 +146,9 @@ def compute_empty_like_pct(series: pd.Series) -> float:
     empty_like = rendered.isin(PLACEHOLDER_TOKENS)
     return float((empty_like.mean()) * 100)
 
-
 def _normalized_pattern(pattern: str | None) -> str:
     """Normalize an optional pattern label for case-insensitive comparisons."""
     return (pattern or "").strip().lower()
-
 
 def _matches_generic_digit_count(value: str, pattern: str) -> bool | None:
     """Match schema phrases such as ``4-digit`` or ``6-digit`` when present."""

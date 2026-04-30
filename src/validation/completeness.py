@@ -7,25 +7,16 @@ CompletenessAnalysisReport that is cached for downstream use.
 """
 
 from __future__ import annotations
-
 import sys
 from pathlib import Path
-
 from src.core.agents import completeness_analysis_agent
 from src.core.cache import load_completeness, save_completeness
 from src.core.models import CompletenessAnalysisReport
-from src.tools import (
-    attach_profile_text,
-    build_completeness_profile,
-    load_dataset_frame,
-    run_agent_with_backoff,
-)
+from src.tools import attach_profile_text, build_completeness_profile, load_dataset_frame, run_agent_with_backoff
 
 
-def _backfill_missing_like_examples(
-    report: CompletenessAnalysisReport,
-    profile,
-) -> CompletenessAnalysisReport:
+
+def _backfill_missing_like_examples(report: CompletenessAnalysisReport, profile) -> CompletenessAnalysisReport:
     """Fill missing per-column placeholder examples from the local completeness profile.
 
     The local profile is computed deterministically from the dataframe before the
@@ -44,19 +35,12 @@ def _backfill_missing_like_examples(
     # Rebuild the per-column findings so only the missing example lists are patched.
     updated_findings = []
     for finding in report.per_column:
-        # If the agent already supplied examples for this column, preserve them as-is.
-        if finding.missing_like_examples:
-            updated_findings.append(finding)
-            continue
+        # Merge agent examples with the exhaustive local profile so all known placeholder spellings are covered.
+        local = placeholder_examples_by_column.get(finding.column_name, [])
+        merged = list(dict.fromkeys(finding.missing_like_examples + local))
+        updated_findings.append(finding.model_copy(update={"missing_like_examples": merged}))
 
-        # Otherwise pull the deterministic examples from the local profile.
-        examples = placeholder_examples_by_column.get(finding.column_name, [])
-        updated_findings.append(
-            finding.model_copy(update={"missing_like_examples": examples})
-        )
-
-    # Return a fresh report object with the backfilled findings while keeping the
-    # agent-authored summary, recommendations, and dataset-level fields unchanged.
+    # Return a fresh report object with the backfilled finding
     return report.model_copy(update={"per_column": updated_findings})
 
 
