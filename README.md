@@ -32,7 +32,7 @@ So the deeper claim the project is making is this: the **pipeline design itself*
 
 The **agentic approach is not an optional addition** to this design. It is what makes the design feasible. Some parts of the workflow inherently require **structured interpretation** that deterministic rules cannot supply: inferring a canonical dtype from a noisy column profile, writing a narrow normalization function for a specific pattern, or producing a concise structured summary of heterogeneous findings. These are tasks where an LLM, when properly bounded, contributes something that static code cannot replicate. At the same time, the **agentic components are never standalone**. Profiling parse rates, counting placeholder values, detecting duplicate patterns, or comparing columns are performed by Python before any model is involved. The agent receives **distilled evidence, not raw data**, and its output is always verified by the host environment before it is trusted. The result is a **staged multi-agent architecture** in which each agent answers a specific question, produces a typed artifact, and is prevented from becoming the sole authority over the data.
 
-### 1.5 Repository Structure and Usage
+### 1.4 Repository Structure and Usage
 
 The **repository** is organized to **satisfy both the course deliverables and the engineering needs** of the system. The main **explanatory notebook** is `main.ipynb`, which is intended to **illustrate the logic of the pipeline**, show **intermediate artifacts**, and provide a **narrative account of the workflow**. 
 
@@ -78,6 +78,30 @@ AgentsAI/
 
 In order to **run the code**, the **user needs to set up a Python environment** with the **dependencies** listed in `requirements.txt` and to provide an **OpenAI API key** through the environment. An optional **Logfire token** can also be provided to enable observability tracing (see Section 2.5 for details).
 After that, to use the project, **install the dependencies** from `requirements.txt`, set the required environment variables, place the **datasets** in `Data/`, and run the pipeline from the notebook, CLI, or app.
+
+### 1.5 Reproducibility and Environment
+
+The repository includes a `requirements.txt` file and can be **reproduced with a standard virtual environment**. The **basic setup** is as follows:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+**Agent-backed stages require an OpenAI API key** to be available through the environment, and the repository **reads environment variables through `.env` using `python-dotenv`**. The **Streamlit application** can be launched with:
+
+```powershell
+streamlit run app.py
+```
+
+The **command-line pipeline** can be run through the **packaged entrypoint**. For example, the **validation bundle** can be built with:
+
+```powershell
+python -m src.entrypoints.main Data/spesa.csv --stage validate
+```
+
+The **same interface exposes additional stages** such as `schema`, `completeness`, `consistency`, `remediate`, `generate`, `apply`, `verify`, `clean`, and `report`. 
 
 
 ## Section 2. Methods
@@ -438,29 +462,7 @@ The repository is built around `pandas`, `numpy`, `pydantic`, `pydantic-ai`, `op
 
 The **prompt design** is also **intentionally token-conscious**. The **system generally does not send full raw columns to the model**. It sends **bounded profiles**, **capped samples**, **representative examples**, and **structured local facts**. This **reduces cost** and **encourages the model to reason over distilled evidence rather than over long noisy inputs**. The **code-execution capability** is enabled only for the `completeness-analysis` and `column-cleaner-generator` agents, and even there it is **bounded**. The repository therefore **uses tool execution as a narrow controlled capability rather than as a free-form sandbox**.
 
-### 2.8 Reproducibility and Environment
 
-The repository includes a `requirements.txt` file and can be **reproduced with a standard virtual environment**. The **basic setup** is as follows:
-
-```powershell
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-```
-
-**Agent-backed stages require an OpenAI API key** to be available through the environment, and the repository **reads environment variables through `.env` using `python-dotenv`**. The **Streamlit application** can be launched with:
-
-```powershell
-streamlit run app.py
-```
-
-The **command-line pipeline** can be run through the **packaged entrypoint**. For example, the **validation bundle** can be built with:
-
-```powershell
-python -m src.entrypoints.main Data/spesa.csv --stage validate
-```
-
-The **same interface exposes additional stages** such as `schema`, `completeness`, `consistency`, `remediate`, `generate`, `apply`, `verify`, `clean`, and `report`. The repository also includes an **optional `graphviz` dependency** for notebook diagram support, but the project should **not rely on that dependency for the final README figures**. As **required by the course**, the **figures shown in the README should be placed in an `images/` folder and referenced as static assets**.
 
 ## Section 3. Experimental Design
 
