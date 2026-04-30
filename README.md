@@ -75,6 +75,7 @@ The repository therefore centralizes model configuration, tracing, and retry pol
 
 Schema validation is the first domain-facing stage. Its purpose is to establish what each column is supposed to represent after cleaning, rather than merely describing how the raw values happened to be stored. This distinction is fundamental. A column may be loaded as strings while still being, in substance, a date field or a numeric field corrupted by a minority of messy values. What the system tries to understand is what a certain column is meant to represent rather than how it happens to be encoded in the raw data. The schema handoff makes this visible in a concrete way. The following examples are built from real columns in the two datasets currently used in the repository and illustrate the kind of entries the schema stage produces.
 
+
 | Dataset | Column | Raw pandas dtype at ingestion | Representative observed values | Schema-stage interpretation | Target cleaned dtype and pattern |
 |---------|--------|-------------------------------|--------------------------------|-----------------------------|----------------------------------|
 | `spesa.csv` | `rata` | `object` | `202402`, `2024-06`, `04/2024`, `FEB-2024` | Monthly period key stored through several encodings | `Int64`, pattern `YYYYMM` |
@@ -95,6 +96,32 @@ The same `dtype-inference` call returns not only the target cleaned pandas dtype
 
 This hybrid design is deliberate. Parse rates and naming rules are straightforward deterministic checks. Interpreting a messy profile as a cleaned target dtype benefits from semantic reasoning, but only when that reasoning is grounded in bounded evidence rather than raw unrestricted data. The stage therefore uses Python for measurement and the agent for constrained interpretation, then passes the inferred dtype and pattern information forward to the later consistency stage.
 
+
+    {
+      "name": "RATA",
+      "pandas_dtype": "Int64",
+      "numeric_role": "code",
+      "string_role": null,
+      "detected_pattern": "YYYYMM period key (with some month-name formats)",
+      "rationale": "Numeric parsing is high (96.0%) and dominant values are compact period keys like '202311' and '202307'; mixed textual month formats (e.g., 'LUG-2024', 'DIC-2023') are treated as corruption/noise for the intended period key.",
+      "non_null_rows": 20102,
+      "distinct_non_null_values": 96,
+      "numeric_parse_pct": 96.01034722913143,
+      "datetime_parse_pct": 0.0,
+      "empty_like_pct": 0.0,
+      "sample_values": [
+        "202311",
+        "202307",
+        "202308",
+        "202304",
+        "202306"
+      ],
+      "naming_valid": false,
+      "rename_suggestion": "rata",
+      "naming_reason": "Column name contains uppercase letters, which violates the lowercase snake_case naming rule."
+    }
+
+
 ### 2.7 Completeness Analysis
 
 Completeness analysis exists because missingness in real datasets is often disguised. A naive null count is usually insufficient. 
@@ -106,6 +133,23 @@ In the implementation, this list is used to normalize raw cell values and compar
 Starting from this placeholder list, `src/tools/completeness_tools.py` builds a deterministic completeness profile. It computes completeness percentages, detects missing-like tokens, records representative placeholder examples, and marks sparse columns. More specifically, the completeness logic constructs a missing-like mask that merges true nulls, empty strings, and configured placeholder values into one unified notion of absence. This profile is then interpreted by the `completeness-analysis` agent, which returns a structured report with per-column recommendations.
 
 The role of the agent at this stage is not to discover missingness independently, but to transform measured evidence into a downstream-readable handoff. The practical benefit is that later stages do not need to repeat the same reasoning. They receive an explicit statement of which columns contain hidden missingness, which placeholder families are present, and whether some columns should be reviewed because they contain almost no meaningful information.
+
+
+    {
+      "column_name": "regione_sede",
+      "completeness_pct": 96.39339369216994,
+      "missing_like_count": 725,
+      "missing_like_examples": [
+        "",
+        "?",
+        "n.d.",
+        "-",
+        "//"
+      ],
+      "sparse_candidate": false,
+      "recommended_action": "Normalize placeholder tokens (including empty string, ?, n.d., -, //) and review missing/placeholder values in regione_sede"
+    }
+
 
 ### 2.8 Format Consistency Validation
 
@@ -128,6 +172,23 @@ The logic behind these limits is the same design principle used earlier in schem
 The slow path is therefore not an unconstrained semantic guess. It is a bounded decision over a pre-structured evidence bundle. The agent examines whether the dominant family is coherent enough, whether the outlier families are substantial enough, and whether the column is a true machine-format candidate. Only then does it decide whether the observed variation should be treated as a genuine actionable inconsistency.
 
 This selectivity is essential. Not every variation should trigger cleaning. Free-text fields, notes, names, or descriptive categorical columns may contain diverse content without containing any format error. The stage therefore emits a `FormatConsistencyFinding` only when a clear canonical representation exists and a measurable inconsistent minority can reasonably be normalized toward it. This is the core trigger for later cleaner generation.
+
+    {
+      "column_name": "RATA",
+      "expected_pattern": "YYYYMM period key (with some month-name formats)",
+      "inconsistent_rows": 802,
+      "example_inconsistent_values": [
+        "09/2024",
+        "2023-09",
+        "2024-04",
+        "DIC-2023",
+        "SET-2023",
+        "12/2023",
+      ],
+      "evidence": "Schema handoff identified target dtype 'Int64' and pattern 'YYYYMM period key (with some month-name formats)'. Schema-guided validation found 802 rows that do not match the target numeric representation.",
+      "suggested_strategy": "Target format: 'YYYYMM period key (with some month-name formats)'. Dominant valid shape: '999999' — values matching this shape are already valid, preserve them. \nExamples of already-valid values (the OUTPUT must look exactly like these): '202311', '202307', '202308', '202304', '202306'.\n\nHandle every outlier shape group below by inferring the transformation from the examples. For each group, verify your transformation produces output that matches the already-valid examples above — same length, same character structure, same field order (e.g. YYYY before MM, not MM before YYYY). Use partial matches, prefix stripping, abbreviation expansion, or abbreviation mapping as needed. Map to null ONLY when a value is completely unrecognisable — never null a value that contains recoverable information:\n\n  shape '9999-99': e.g. '2023-09', '2023-12', '2024-02', '2023-04', '2024-04'\n  shape 'AAA-9999': e.g. 'DIC-2023', 'SET-2023', 'OTT-2023', 'SET-2024', 'DIC-2024'\n  shape '99/9999': e.g. '09/2024', '12/2023', '03/2024', '04/2023', '12/2024'\n\nEVERY value in example_inconsistent_values must be explicitly handled — do not leave any outlier value unchanged unless it already matches the target format. Prefer a best-effort conversion over null whenever the value contains recoverable information."
+    }
+
 
 ### 2.9 Anomaly Detection
 
@@ -159,8 +220,6 @@ One additional implementation detail matters here. Before the final anomaly repo
 
 Data quality cannot be understood only by inspecting each column independently. A dataset may contain columns that look reasonable in isolation and still contradict one another when compared. Similarly, row-level redundancy introduces a different class of quality issue from format inconsistency.
 
-MICHELE
-
 For this reason, the repository includes deterministic cross-column checks and duplicate detection in `src/tools/quality_tools.py`. No LLM performs these checks. The corresponding agents, `cross-column-summary` and `duplicate-summary`, are used only afterward to summarize findings that have already been computed by Python. This is an important methodological choice: when a relationship can be measured directly and exactly by code, the project prefers deterministic comparison over model judgment.
 
 The cross-column stage therefore applies explicit programmatic rules. Exact and near-duplicate columns are detected by first restricting the comparison to eligible pairs, meaning columns that belong to the same broad dtype family and are not obviously incomparable, such as free-text columns or a numeric measure compared against a numeric code. Values are normalized for case and whitespace, and the comparison is performed only on rows where both columns contain a real non-placeholder value. At least 20 comparable rows must exist, and the overlap between the two columns must cover at least 80 percent of the smaller present-value set. If the two normalized columns agree on every comparable row, they are flagged as exact duplicate columns. If they do not agree perfectly but still agree on at least 95 percent of comparable rows, and the number of mismatches stays below `max(10, ceil(0.05 * comparable_rows))`, they are flagged as near-duplicate columns. In other words, "near duplicate" here does not mean a vague semantic resemblance. It means a very high row-wise agreement rate under an explicit threshold.
@@ -168,6 +227,29 @@ The cross-column stage therefore applies explicit programmatic rules. Exact and 
 The same deterministic approach is used for the relational checks. Year-month-period mismatches are detected by rebuilding the expected `YYYYMM` key from the year and month columns and comparing it directly against the stored period key. Date-order violations are detected by checking whether a likely start date occurs after a likely end date. These are straightforward logical comparisons, so the repository treats them as rule-based checks rather than as interpretive model tasks.
 
 The duplicate stage follows the same philosophy at row level. Exact duplicate rows are detected after case- and whitespace-normalization of the full row signature. Near-duplicate rows are detected differently: the system first infers a small set of likely business-key columns, preferring identifiers, numeric codes, and temporal keys such as year, month, or `YYYYMM`. Rows that share the same normalized key values are grouped together, and if those rows differ elsewhere in the record they are flagged as near-duplicate groups. This means that near-duplicate rows are not simply "similar-looking" rows. They are rows that appear to refer to the same entity or event under the inferred key columns, while still containing some disagreement in the remaining fields.
+
+    {
+      "columns": [
+        "provincia_sede",
+        "Provincia Sede"
+      ],
+      "check_type": "duplicate_semantic_conflict",
+      "severity": "high",
+      "affected_rows": 105,
+      "example_row_indices": [
+        110,
+        349,
+        500,
+        531,
+        547,
+        954,
+        1437,
+        1608
+      ],
+      "similarity_pct": 99.44,
+      "evidence": "Columns 'provincia_sede' and 'Provincia Sede' normalize to the same schema name but disagree on 105 of 18842 rows where both values are present (99.44% similarity).",
+      "suggested_action": "Review whether one column should override the other, whether they need reconciliation rules, or whether both must be preserved separately."
+    }
 
 ### 2.11 Validation Bundling and Remediation Planning
 
