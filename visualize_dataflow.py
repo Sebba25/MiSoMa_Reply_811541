@@ -263,6 +263,180 @@ def create_generation_validation_cycle(output_dir: str = OUTPUT_DIR) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 6. Schema validation internals
+# ---------------------------------------------------------------------------
+
+def create_schema_validation_detail(output_dir: str = OUTPUT_DIR) -> None:
+    dot = _base_graph("SchemaValidationDetail", "Schema validation internals", rankdir="TB", ranksep="0.85")
+
+    dot.node("df",      "Raw DataFrame",                         fillcolor=COLORS["source"])
+    dot.node("prof",    "Deterministic profiler\n(schema_tools.py)\n\nnon-null count · distinct count\nnumeric parse % · datetime parse %\nrandom sample (≤5%, ≤500 values)",
+             fillcolor=COLORS["action"])
+
+    # Parallel branches
+    dot.node("agent",   "dtype-inference agent\n\nreceives: column name,\nparse stats, bounded sample\n→ infers target dtype,\nsemantic role, detected_pattern",
+             fillcolor=COLORS["agent"])
+    dot.node("naming",  "Naming checks\n(deterministic)\n\nsnake_case · leading digit\nunsafe characters",
+             fillcolor=COLORS["action"])
+    dot.node("semdup",  "Duplicate-semantic\ncheck (deterministic)\n\ncolumns that normalise\nto the same name",
+             fillcolor=COLORS["action"])
+
+    dot.node("merge",   "Merge results",                         fillcolor=COLORS["action"])
+    dot.node("sh",      "SchemaHandoff\n\npandas_dtype · detected_pattern\nsemantic role · rename suggestion\nnaming_valid · duplicate groups",
+             fillcolor=COLORS["artifact"], style="rounded,filled,bold")
+
+    dot.edge("df",    "prof")
+    dot.edge("prof",  "agent",  label="column profile\n+ sample")
+    dot.edge("prof",  "naming", label="column names")
+    dot.edge("prof",  "semdup", label="column names")
+
+    # force agent / naming / semdup on same rank
+    with dot.subgraph() as s:
+        s.attr(rank="same")
+        for n in ["agent", "naming", "semdup"]:
+            s.node(n)
+
+    dot.edge("agent",  "merge")
+    dot.edge("naming", "merge")
+    dot.edge("semdup", "merge")
+    dot.edge("merge",  "sh")
+
+    _render(dot, output_dir)
+
+
+# ---------------------------------------------------------------------------
+# 7. Format consistency validation — fast path vs slow path
+# ---------------------------------------------------------------------------
+
+def create_consistency_detail(output_dir: str = OUTPUT_DIR) -> None:
+    dot = _base_graph("ConsistencyDetail", "Format consistency fast vs slow path", rankdir="TB", ranksep="0.9")
+
+    dot.node("sh",      "SchemaHandoff\n(detected_pattern, pandas_dtype)",  fillcolor=COLORS["artifact"])
+    dot.node("df",      "Raw DataFrame column",                              fillcolor=COLORS["source"])
+    dot.node("shape",   "Shape profiler\n(format_tools.py)\n\nrenders each value as an\nabstract shape (9→digit, A→letter)\ncounts shape frequencies\n→ dominant_shape, dominant_shape_pct",
+             fillcolor=COLORS["action"])
+    dot.node("gate",    "Entry gate\n\nmachine_format_candidate?\nnumeric_parse_pct ≥ 85?\nschema gate bypass?",
+             fillcolor=COLORS["action"], shape="diamond")
+
+    dot.node("skip",    "Column skipped\n(no finding emitted)",              fillcolor=COLORS["artifact"])
+
+    dot.node("fast",    "Fast path\n(schema-guided)\n\nvalidate values directly\nagainst detected_pattern\nno LLM call",
+             fillcolor=COLORS["action"])
+    dot.node("slow",    "Slow path\n(agent-backed)\n\nColumnFormatFacts serialised:\ndominant_shape · outlier families\nparse stats · schema hints\n→ agent decides if actionable",
+             fillcolor=COLORS["agent"])
+
+    dot.node("finding", "FormatConsistencyFinding\n\nexpected_pattern · inconsistent_rows\nexample_inconsistent_values\nsuggested_strategy",
+             fillcolor=COLORS["artifact"], style="rounded,filled,bold")
+    dot.node("none",    "No finding\n(column is consistent\nor free-text)",  fillcolor=COLORS["artifact"])
+
+    dot.edge("sh",    "shape")
+    dot.edge("df",    "shape")
+    dot.edge("shape", "gate")
+    dot.edge("gate",  "skip",    label="not a candidate", style="dashed", color="#888888", fontcolor="#888888")
+    dot.edge("gate",  "fast",    label="unambiguous\nschema pattern")
+    dot.edge("gate",  "slow",    label="no stable\npattern")
+    dot.edge("fast",  "finding", label="inconsistencies\nfound")
+    dot.edge("fast",  "none",    label="all values\nvalid", style="dashed", color="#888888", fontcolor="#888888")
+    dot.edge("slow",  "finding", label="agent flags\nas actionable")
+    dot.edge("slow",  "none",    label="agent flags\nas non-actionable", style="dashed", color="#888888", fontcolor="#888888")
+
+    _render(dot, output_dir)
+
+
+# ---------------------------------------------------------------------------
+# 8. Remediation planning — findings → actions
+# ---------------------------------------------------------------------------
+
+def create_remediation_detail(output_dir: str = OUTPUT_DIR) -> None:
+    dot = _base_graph("RemediationDetail", "Remediation planning", rankdir="TB", ranksep="0.85")
+
+    dot.node("bundle", "Validation bundle\n(OrchestrationStepResult)", fillcolor=COLORS["artifact"])
+
+    # Finding families (same rank)
+    with dot.subgraph() as s:
+        s.attr(rank="same")
+        s.node("schema_f",   "Schema findings\n(dtype cast, rename,\nduplicate columns)",  fillcolor=COLORS["artifact"])
+        s.node("complete_f", "Completeness findings\n(placeholder tokens,\nsparse columns)", fillcolor=COLORS["artifact"])
+        s.node("consist_f",  "Consistency findings\n(FormatConsistencyFinding)",            fillcolor=COLORS["artifact"])
+        s.node("other_f",    "Anomaly · cross-column\n· duplicate findings",                fillcolor=COLORS["artifact"])
+
+    dot.edge("bundle", "schema_f")
+    dot.edge("bundle", "complete_f")
+    dot.edge("bundle", "consist_f")
+    dot.edge("bundle", "other_f")
+
+    dot.node("planner", "Remediation planner\n(remediation.py)\n\nclassifies each finding\nby risk level and evidence strength",
+             fillcolor=COLORS["agent"])
+
+    for n in ["schema_f", "complete_f", "consist_f", "other_f"]:
+        dot.edge(n, "planner")
+
+    # Decision split
+    dot.node("decision", "Risk classification",
+             fillcolor=COLORS["action"], shape="diamond")
+    dot.edge("planner", "decision")
+
+    dot.node("auto",   "auto_apply = True\n\ndtype cast · safe rename\nplaceholder→null\nexact duplicate column/row drop",
+             fillcolor=COLORS["output"])
+    dot.node("manual", "manual_review / report_only\n\nanomalies · near-duplicate columns\nsemantic conflicts · date-order violations\nnear-duplicate rows",
+             fillcolor=COLORS["artifact"])
+
+    dot.edge("decision", "auto",   label="low risk,\nmechanically justified")
+    dot.edge("decision", "manual", label="ambiguous or\nhigh impact")
+
+    dot.node("plan", "RemediationPlan\n(RemediationAction[])", fillcolor=COLORS["artifact"], style="rounded,filled,bold")
+    dot.edge("auto",   "plan")
+    dot.edge("manual", "plan")
+
+    _render(dot, output_dir)
+
+
+# ---------------------------------------------------------------------------
+# 9. Verification — before/after comparison
+# ---------------------------------------------------------------------------
+
+def create_verification_detail(output_dir: str = OUTPUT_DIR) -> None:
+    dot = _base_graph("VerificationDetail", "Post-cleaning verification", rankdir="TB", ranksep="0.9")
+
+    dot.node("orig_csv",  "Original CSV",          fillcolor=COLORS["source"], shape="folder")
+    dot.node("clean_csv", "Cleaned CSV",            fillcolor=COLORS["output"], shape="folder")
+    dot.node("orig_find", "Original consistency\nfindings\n(from validation bundle)", fillcolor=COLORS["artifact"])
+
+    dot.node("reread",    "Re-read cleaned CSV\nas raw strings\n(no dtype coercion)",  fillcolor=COLORS["action"])
+    dot.node("reshape",   "Re-run shape profiler\non cleaned columns",                 fillcolor=COLORS["action"])
+
+    dot.node("diff",      "Diff engine\n(verification.py)\n\ncompares new findings\nagainst original findings\nper targeted column",
+             fillcolor=COLORS["action"])
+
+    dot.node("agent",     "Verification agent\n\nsummarises diff results\ninto structured assessment",
+             fillcolor=COLORS["agent"])
+
+    # Outcome nodes (same rank)
+    with dot.subgraph() as s:
+        s.attr(rank="same")
+        s.node("resolved",   "resolved\n(issue gone)",           fillcolor=COLORS["output"])
+        s.node("improved",   "improved\n(inconsistencies reduced)", fillcolor=COLORS["output"])
+        s.node("unchanged",  "unchanged\n(no effect)",           fillcolor=COLORS["artifact"])
+        s.node("regressed",  "regressed\n(new issues introduced)", fillcolor="#ffd0d0")
+
+    dot.node("verif_out", "VerificationReport\n\nper-column outcome + evidence\noverall assessment",
+             fillcolor=COLORS["artifact"], style="rounded,filled,bold")
+
+    dot.edge("clean_csv", "reread")
+    dot.edge("reread",    "reshape")
+    dot.edge("reshape",   "diff")
+    dot.edge("orig_find", "diff",  label="baseline")
+    dot.edge("orig_csv",  "diff",  label="original\nrow count / dtypes", style="dashed", color="#888888", fontcolor="#888888")
+    dot.edge("diff",      "agent")
+
+    for outcome in ["resolved", "improved", "unchanged", "regressed"]:
+        dot.edge("agent", outcome)
+        dot.edge(outcome, "verif_out")
+
+    _render(dot, output_dir)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -273,6 +447,10 @@ def main() -> None:
     create_cleaning_flow_detail()
     create_schema_flow_diagram()
     create_generation_validation_cycle()
+    create_schema_validation_detail()
+    create_consistency_detail()
+    create_remediation_detail()
+    create_verification_detail()
     print("Done.")
 
 
