@@ -44,12 +44,20 @@ MODEL = "openai-responses:gpt-5.4-nano"
 
 
 def setup_logfire() -> None:
+    logfire_token = os.getenv("LOGFIRE_TOKEN")
+    send_to_logfire = (
+        False
+        if os.getenv("LOGFIRE_SEND") == "0"
+        else "if-token-present"
+    )
+    repo_root = Path(__file__).resolve().parents[2]
     logfire.configure(
-        data_dir=Path(__file__).parent / ".logfire",
+        data_dir=repo_root / ".logfire",
         service_name="pydantic-dataset-smoke-test",
         service_version="1.0.0",
         environment=os.getenv("LOGFIRE_ENVIRONMENT", "dev"),
-        send_to_logfire=os.getenv("LOGFIRE_SEND", "1") == "1",
+        send_to_logfire=send_to_logfire,
+        token=logfire_token,
     )
     logfire.instrument_pydantic_ai()
     if os.getenv("LOGFIRE_CAPTURE_HTTPX") == "1":
@@ -571,4 +579,3 @@ narrative_section_agent = Agent(
         "- No markdown outside the JSON fields."
     ),
 )
-

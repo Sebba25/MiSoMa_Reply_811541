@@ -258,7 +258,7 @@ def main() -> None:
 
     # Resolve datasets relative to the repository root even though this file now
     # lives inside the dedicated entrypoints package.
-    repo_root = Path(__file__).resolve().parent.parent
+    repo_root = Path(__file__).resolve().parent.parent.parent
     dataset_path = repo_root / args.dataset
     if not dataset_path.exists():
         raise SystemExit(f"Dataset not found: {dataset_path}")
