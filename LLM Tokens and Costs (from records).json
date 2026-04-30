@@ -1,0 +1,405 @@
+{
+  "kind": "Dashboard",
+  "metadata": {
+    "name": "LLM Tokens and Costs (from records)",
+    "project": "agents-ai"
+  },
+  "spec": {
+    "display": {
+      "name": "LLM Tokens and Costs (from records)",
+      "description": "Input and output LLM tokens and costs over time by model. (more compatible with different instrumentations, and more flexible if used as a template)"
+    },
+    "panels": {
+      "Bytypetotals": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "By type totals"
+          },
+          "plugin": {
+            "kind": "Values",
+            "spec": {}
+          },
+          "queries": [
+            {
+              "kind": "NonTimeSeriesQuery",
+              "spec": {
+                "plugin": {
+                  "kind": "LogfireNonTimeSeriesQuery",
+                  "spec": {
+                    "query": "select\n    sum((attributes->'gen_ai.usage.input_tokens')::int) as \"Input\",\n    sum((attributes->'gen_ai.usage.output_tokens')::int) as \"Output\"\nfrom records\nwhere attributes ? 'gen_ai.usage.input_tokens'\n  and attributes ? 'gen_ai.request.model'\n"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "chart_1_t3xime": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "By type"
+          },
+          "plugin": {
+            "kind": "TimeSeriesChart",
+            "spec": {
+              "yAxis": {
+                "show": true,
+                "label": "Tokens",
+                "format": {
+                  "unit": "decimal",
+                  "shortValues": true
+                }
+              },
+              "legend": {
+                "position": "bottom"
+              },
+              "visual": {
+                "display": "line"
+              }
+            }
+          },
+          "queries": [
+            {
+              "kind": "TimeSeriesQuery",
+              "spec": {
+                "plugin": {
+                  "kind": "LogfireTimeSeriesQuery",
+                  "spec": {
+                    "query": "select\n    sum((attributes->'gen_ai.usage.input_tokens')::int) as \"Input\",\n    sum((attributes->'gen_ai.usage.output_tokens')::int) as \"Output\",\n    time_bucket($resolution, start_timestamp) AS x\nfrom records\nwhere attributes ? 'gen_ai.request.model'\ngroup by x\n",
+                    "metrics": [
+                      "Input",
+                      "Output"
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "chart_2+1747316590012": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "By model and type"
+          },
+          "plugin": {
+            "kind": "TimeSeriesChart",
+            "spec": {
+              "yAxis": {
+                "show": true,
+                "label": "Tokens"
+              },
+              "legend": {
+                "position": "bottom"
+              },
+              "visual": {
+                "display": "line"
+              }
+            }
+          },
+          "queries": [
+            {
+              "kind": "TimeSeriesQuery",
+              "spec": {
+                "plugin": {
+                  "kind": "LogfireTimeSeriesQuery",
+                  "spec": {
+                    "query": "select\n    sum((attributes->'gen_ai.usage.input_tokens')::int) as \"Input\",\n    sum((attributes->'gen_ai.usage.output_tokens')::int) as \"Output\",\n    attributes->>'gen_ai.request.model' as model,\n    time_bucket($resolution, start_timestamp) AS x\nfrom records\nwhere attributes ? 'gen_ai.request.model'\ngroup by x, model",
+                    "groupBy": "model",
+                    "metrics": [
+                      "Input",
+                      "Output"
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "chart_2 + 1747316590012": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "By model"
+          },
+          "plugin": {
+            "kind": "TimeSeriesChart",
+            "spec": {
+              "yAxis": {
+                "show": true,
+                "label": "Tokens"
+              },
+              "legend": {
+                "position": "bottom"
+              },
+              "visual": {
+                "display": "line"
+              }
+            }
+          },
+          "queries": [
+            {
+              "kind": "TimeSeriesQuery",
+              "spec": {
+                "plugin": {
+                  "kind": "LogfireTimeSeriesQuery",
+                  "spec": {
+                    "query": "select\n    sum((attributes->'gen_ai.usage.input_tokens')::int) + sum((attributes->'gen_ai.usage.output_tokens')::int) as tokens,\n    attributes->>'gen_ai.request.model' as model,\n    time_bucket($resolution, start_timestamp) AS x\nfrom records\nwhere attributes ? 'gen_ai.request.model'\ngroup by x, model",
+                    "groupBy": "model",
+                    "metrics": [
+                      "tokens"
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "chart_3 + 1747326794506": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "By model totals"
+          },
+          "plugin": {
+            "kind": "BarChart",
+            "spec": {
+              "mode": "value",
+              "sort": "desc",
+              "format": {
+                "unit": "decimal",
+                "shortValues": true
+              },
+              "showValues": true,
+              "calculation": "last"
+            }
+          },
+          "queries": [
+            {
+              "kind": "NonTimeSeriesQuery",
+              "spec": {
+                "plugin": {
+                  "kind": "LogfireNonTimeSeriesQuery",
+                  "spec": {
+                    "query": "select * from (\n  select\n      sum((attributes->'gen_ai.usage.input_tokens')::int) + sum((attributes->'gen_ai.usage.output_tokens')::int) as tokens,\n      attributes->>'gen_ai.request.model' as model\n  from records\n  where attributes ? 'gen_ai.request.model'\n  group by model\n) order by tokens desc",
+                    "groupBy": "",
+                    "metrics": []
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "chart_2+1747316590012-1": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "By model"
+          },
+          "plugin": {
+            "kind": "TimeSeriesChart",
+            "spec": {
+              "yAxis": {
+                "show": true,
+                "label": "Cost ($)"
+              },
+              "legend": {
+                "position": "bottom"
+              },
+              "visual": {
+                "display": "line"
+              }
+            }
+          },
+          "queries": [
+            {
+              "kind": "TimeSeriesQuery",
+              "spec": {
+                "plugin": {
+                  "kind": "LogfireTimeSeriesQuery",
+                  "spec": {
+                    "query": "select\n    sum((attributes->'operation.cost')::float) as cost,\n    attributes->>'gen_ai.request.model' as model,\n    time_bucket($resolution, start_timestamp) AS x\nfrom records\nwhere attributes ? 'gen_ai.request.model'\n  and attributes ? 'operation.cost'\ngroup by x, model",
+                    "groupBy": "model",
+                    "metrics": [
+                      "cost"
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "chart_3+1747326794506": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "By model totals"
+          },
+          "plugin": {
+            "kind": "BarChart",
+            "spec": {
+              "mode": "value",
+              "sort": "desc",
+              "format": {
+                "unit": "decimal",
+                "shortValues": true
+              },
+              "showValues": true,
+              "calculation": "last"
+            }
+          },
+          "queries": [
+            {
+              "kind": "NonTimeSeriesQuery",
+              "spec": {
+                "plugin": {
+                  "kind": "LogfireNonTimeSeriesQuery",
+                  "spec": {
+                    "query": "select * from (\n  select\n      sum((attributes->'operation.cost')::float) as cost,\n      attributes->>'gen_ai.request.model' as model\n  from records\n  where attributes ? 'gen_ai.request.model'\n  group by model\n) order by cost desc",
+                    "groupBy": "",
+                    "metrics": []
+                  }
+                }
+              }
+            }
+          ]
+        }
+      },
+      "Bytypetotals-1": {
+        "kind": "Panel",
+        "spec": {
+          "display": {
+            "name": "Total Cost"
+          },
+          "plugin": {
+            "kind": "Values",
+            "spec": {}
+          },
+          "queries": [
+            {
+              "kind": "NonTimeSeriesQuery",
+              "spec": {
+                "plugin": {
+                  "kind": "LogfireNonTimeSeriesQuery",
+                  "spec": {
+                    "query": "with result as (\n  select sum((attributes->'operation.cost')::float) as x\n  from records\n  where attributes ? 'operation.cost'\n\n    -- Ignore costs not from LLMs\n    and attributes ? 'gen_ai.request.model'\n)\n\n-- Everything below here is just fussing over display\nselect '$' || coalesce(\n  CASE\n    -- For 3 digits or more, just round to the nearest integer.\n    -- Also for 0 to avoid errors in the case below when taking LOG10.\n    WHEN x >= 100 or x = 0 THEN ROUND(x)::decimal\n\n    -- For small numbers, round to 3 significant figures.\n    -- Use decimals to avoid displaying loads of digits due to floating point weirdness.\n    ELSE\n        ROUND(x / POWER(10.0, FLOOR(LOG10(x))), 2)::decimal\n        * POWER(10.0, FLOOR(LOG10(x)))::decimal\n  END\n  -- Cast back to float to avoid displaying trailing zeroes after converting to string.\n, 0)::float as \"\" from result\n"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "layouts": [
+      {
+        "kind": "Grid",
+        "spec": {
+          "display": {
+            "title": "Token usage",
+            "collapse": {
+              "open": true
+            }
+          },
+          "items": [
+            {
+              "x": 0,
+              "y": 8,
+              "width": 24,
+              "height": 8,
+              "content": {
+                "$ref": "#/spec/panels/chart_1_t3xime"
+              }
+            },
+            {
+              "x": 0,
+              "y": 0,
+              "width": 24,
+              "height": 8,
+              "content": {
+                "$ref": "#/spec/panels/chart_2+1747316590012"
+              }
+            },
+            {
+              "x": 0,
+              "y": 16,
+              "width": 24,
+              "height": 8,
+              "content": {
+                "$ref": "#/spec/panels/chart_2 + 1747316590012"
+              }
+            },
+            {
+              "x": 0,
+              "y": 24,
+              "width": 12,
+              "height": 14,
+              "content": {
+                "$ref": "#/spec/panels/chart_3 + 1747326794506"
+              }
+            },
+            {
+              "x": 12,
+              "y": 24,
+              "width": 12,
+              "height": 14,
+              "content": {
+                "$ref": "#/spec/panels/Bytypetotals"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "kind": "Grid",
+        "spec": {
+          "display": {
+            "title": "Costs (Pydantic AI only)",
+            "collapse": {
+              "open": true
+            }
+          },
+          "items": [
+            {
+              "x": 0,
+              "y": 8,
+              "width": 12,
+              "height": 14,
+              "content": {
+                "$ref": "#/spec/panels/chart_3+1747326794506"
+              }
+            },
+            {
+              "x": 12,
+              "y": 8,
+              "width": 12,
+              "height": 14,
+              "content": {
+                "$ref": "#/spec/panels/Bytypetotals-1"
+              }
+            },
+            {
+              "x": 0,
+              "y": 0,
+              "width": 24,
+              "height": 8,
+              "content": {
+                "$ref": "#/spec/panels/chart_2+1747316590012-1"
+              }
+            }
+          ]
+        }
+      }
+    ],
+    "variables": [],
+    "duration": "1h",
+    "refreshInterval": "0s"
+  }
+}

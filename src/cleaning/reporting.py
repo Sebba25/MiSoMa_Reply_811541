@@ -8,6 +8,7 @@ to produce the Markdown summary saved alongside the cleaned CSV.
 
 from __future__ import annotations
 
+import asyncio
 import re
 import sys
 from pathlib import Path
@@ -23,7 +24,7 @@ from src.core.models import (
 )
 
 from src.core.agents import narrative_frontmatter_agent, narrative_section_agent
-from src.tools.common_tools import attach_text_document, run_agent_with_backoff
+from src.tools.common_tools import attach_text_document, run_agent_with_backoff, run_agent_with_backoff_async
 
 from .paths import cleaned_dataset_path, cleaning_cache_dir, final_report_path
 
@@ -521,8 +522,53 @@ def _build_narrative_section_specs(final_report: FinalPipelineReport) -> list[tu
     ]
 
 
-def _generate_narrative_report_chunked(final_report: FinalPipelineReport) -> NarrativeReport:
+async def _generate_narrative_sections_async(
+    final_report: FinalPipelineReport,
+    section_specs: list[tuple[str, str]],
+    max_workers: int,
+) -> list[NarrativeReportSection]:
+    """Generates narrative body sections concurrently while preserving order."""
+    semaphore = asyncio.Semaphore(max_workers)
+    sections: list[NarrativeReportSection | None] = [None] * len(section_specs)
+
+    async def _run_one(index: int, heading: str, briefing: str) -> None:
+        async with semaphore:
+            section = (
+                await run_agent_with_backoff_async(
+                    narrative_section_agent,
+                    [
+                        (
+                            f"Write exactly one report section with heading '{heading}' for dataset "
+                            f"'{final_report.dataset_name}'."
+                        ),
+                        attach_text_document(briefing),
+                    ],
+                )
+            ).output
+        # Force the returned heading to match the expected section heading if needed.
+        if section.heading != heading:
+            section = section.model_copy(update={"heading": heading})
+        # Lightly clean the generated body text before saving it.
+        section = section.model_copy(update={"body": _polish_narrative_body(section.body)})
+        sections[index] = section
+
+    tasks = [
+        asyncio.create_task(_run_one(index, heading, briefing))
+        for index, (heading, briefing) in enumerate(section_specs)
+    ]
+    for task in asyncio.as_completed(tasks):
+        await task
+
+    return [section for section in sections if section is not None]
+
+
+def _generate_narrative_report_chunked(
+    final_report: FinalPipelineReport,
+    max_workers: int = 1,
+) -> NarrativeReport:
     '''Generates the narrative report in chunks using separate agents for frontmatter and body sections.'''
+    if max_workers < 1:
+        raise ValueError("max_workers must be at least 1.")
 
     # Generate the title, executive summary, and recommendations first.
     frontmatter = run_agent_with_backoff(
@@ -534,24 +580,31 @@ def _generate_narrative_report_chunked(final_report: FinalPipelineReport) -> Nar
     ).output
 
     # Generate each narrative section independently from its own briefing block.
-    sections: list[NarrativeReportSection] = []
-    for heading, briefing in _build_narrative_section_specs(final_report):
-        section = run_agent_with_backoff(
-            narrative_section_agent,
-            [
-                (
-                    f"Write exactly one report section with heading '{heading}' for dataset "
-                    f"'{final_report.dataset_name}'."
-                ),
-                attach_text_document(briefing),
-            ],
-        ).output
-        # Force the returned heading to match the expected section heading if needed.
-        if section.heading != heading:
-            section = section.model_copy(update={"heading": heading})
-        # Lightly clean the generated body text before saving it.
-        section = section.model_copy(update={"body": _polish_narrative_body(section.body)})
-        sections.append(section)
+    section_specs = _build_narrative_section_specs(final_report)
+    if max_workers == 1 or len(section_specs) <= 1:
+        sections: list[NarrativeReportSection] = []
+        for heading, briefing in section_specs:
+            section = run_agent_with_backoff(
+                narrative_section_agent,
+                [
+                    (
+                        f"Write exactly one report section with heading '{heading}' for dataset "
+                        f"'{final_report.dataset_name}'."
+                    ),
+                    attach_text_document(briefing),
+                ],
+            ).output
+            # Force the returned heading to match the expected section heading if needed.
+            if section.heading != heading:
+                section = section.model_copy(update={"heading": heading})
+            # Lightly clean the generated body text before saving it.
+            section = section.model_copy(update={"body": _polish_narrative_body(section.body)})
+            sections.append(section)
+    else:
+        worker_count = min(max_workers, len(section_specs))
+        sections = asyncio.run(
+            _generate_narrative_sections_async(final_report, section_specs, worker_count)
+        )
 
     # Assemble the final narrative report from generated frontmatter and sections.
     return NarrativeReport(
@@ -560,5 +613,3 @@ def _generate_narrative_report_chunked(final_report: FinalPipelineReport) -> Nar
         sections=sections,
         recommendations=[_polish_narrative_body(item) for item in frontmatter.recommendations],
     )
-
-

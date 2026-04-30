@@ -156,6 +156,7 @@ def run_cleaning(
     cleaner_attempts: int = 10, #Maximum retry attempts for each cleaner-generation loop
     cleaner_workers: int = 1, #Number of workers for cleaner generation
     verify_workers: int = 1, #Number of workers for verification
+    narrative_workers: int = 1, #Number of workers for narrative section generation
 ) -> CleaningPipelineResult:
     '''Runs the full cleaning pipeline from validation resolution to final report generation.'''
     # Validate basic user-controlled settings before running any stage
@@ -165,6 +166,8 @@ def run_cleaning(
         raise ValueError("cleaner_workers must be at least 1.")
     if verify_workers < 1:
         raise ValueError("verify_workers must be at least 1.")
+    if narrative_workers < 1:
+        raise ValueError("narrative_workers must be at least 1.")
 
     # Resolve or build the validation bundle used by downstream stages
     validation_results = _resolve_validation_results(path, validation_results, reuse_saved_validation)
@@ -199,7 +202,7 @@ def run_cleaning(
     )
     # Save the final JSON report and the human-readable narrative report
     save_final_report(path, final_report)
-    narrative = _generate_narrative_report_chunked(final_report)
+    narrative = _generate_narrative_report_chunked(final_report, max_workers=narrative_workers)
     save_narrative_report(path, narrative)
 
     # Return a single result object containing the outputs of every major pipeline stage

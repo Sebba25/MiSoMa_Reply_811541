@@ -164,7 +164,8 @@ def run_narrative_report(args: argparse.Namespace, dataset_path: Path):
     final_report = FinalPipelineReport.model_validate_json(
         report_path.read_text(encoding="utf-8")
     )
-    narrative = _generate_narrative_report_chunked(final_report)
+    agent_workers = args.agent_workers if args.concurrent_agents else 1
+    narrative = _generate_narrative_report_chunked(final_report, max_workers=agent_workers)
     output_path = save_narrative_report(dataset_path, narrative)
     sys.stdout.buffer.write(output_path.read_bytes())
     sys.stdout.buffer.write(b"\n")
@@ -199,6 +200,7 @@ def run_stage(args: argparse.Namespace, dataset_path: Path):
             cleaner_attempts=parsed_args.cleaner_attempts,
             cleaner_workers=agent_workers,
             verify_workers=agent_workers,
+            narrative_workers=agent_workers,
         ),
         "generate": lambda parsed_args, path: run_cleaner_generation(
             path,
