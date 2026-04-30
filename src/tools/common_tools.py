@@ -25,17 +25,26 @@ import time
 import pandas as pd
 from pydantic import BaseModel
 from pydantic_ai import Agent
-from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
+from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.messages import (
     BinaryContent,
     FinalResultEvent,
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     PartDeltaEvent,
-    PartEndEvent,
     PartStartEvent,
 )
 from pydantic_ai.usage import UsageLimits
+
+try:
+    from pydantic_ai.exceptions import ModelAPIError
+except ImportError:  # pydantic-ai < 1.30
+    ModelAPIError = RuntimeError
+
+try:
+    from pydantic_ai.messages import PartEndEvent
+except ImportError:  # pydantic-ai 0.8.x does not expose this stream event
+    PartEndEvent = ()
 
 # Shared Constants
 

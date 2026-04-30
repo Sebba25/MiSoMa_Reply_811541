@@ -5,6 +5,7 @@ rules (``is_valid_schema_name`` / ``normalized_schema_name``), and the
 dataset-level profile aggregate."""
 
 from __future__ import annotations
+import math
 import re
 from pydantic import BaseModel, Field
 from src.tools.common_tools import (
@@ -113,19 +114,23 @@ def naming_rule_reason(name: str) -> str:
 
 
 # Profile Builders
-def build_dtype_inference_text(df, n_rows: int = 100) -> str:
+def build_dtype_inference_text(df, sample_fraction: float = 0.05, sample_cap: int = 500, random_state: int = 42) -> str:
     """Serialize the dataset into a column-by-column text profile for the dtype inference agent.
-    Each line contains the column name, up to n_rows unique non-null sample values,
+    Each line contains the column name, up to 5% of dataset rows capped at 500 unique
+    non-null sample values selected at random,
     and the numeric/datetime parse percentages computed over the full column.
     The parse percentages give the LLM statistical context about the whole column,
     preventing dirty sample values from misleading the type inference."""
+    sample_limit = min(sample_cap, max(1, math.ceil(len(df) * sample_fraction)))
     lines: list[str] = []
     for column_name in df.columns:
         series = df[column_name]
         # Drop nulls, convert to string, strip whitespace, filter out empty strings, and get unique values for the sample
         samples = series.dropna().astype(str).str.strip().loc[lambda s: s != ""].drop_duplicates()
-        # Limit to n_rows samples for brevity in the prompt; convert to list for easier joining
-        samples = samples.head(n_rows).tolist()
+        # Randomly sample up to the dataset-level limit for prompt brevity while avoiding head-only bias.
+        if len(samples) > sample_limit:
+            samples = samples.sample(n=sample_limit, random_state=random_state)
+        samples = samples.tolist()
         # Format samples as a comma-separated list of quoted strings, or indicate if there are no valid samples
         samples_text = ", ".join(f'"{v}"' for v in samples) if samples else "(no samples)"
         # Compute parse percentages over the entire column to provide global context to the LLM
@@ -152,5 +157,3 @@ def build_dataset_profile(df, dataset_name: str, dtype_overrides: dict[str, str]
                 empty_like_pct=compute_empty_like_pct(df[column_name]), # Percentage of values that are empty or look empty which can be a signal for missingness or data quality issues
                 sample_values=sample_non_null_values(df[column_name]) # A small sample of non-null values for this column, which can be used in LLM prompts to provide concrete examples of the data in this column.
                 ) for column_name in df.columns]) # iterate over columns to build their profiles
-
-
