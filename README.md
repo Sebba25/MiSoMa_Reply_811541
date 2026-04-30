@@ -6,7 +6,7 @@ This repository documents a project developed for the Machine Learning course fo
 
 The repository contains both implementation code and explanatory material. The notebook `main.ipynb` is intended to present the workflow in a readable, didactic manner. The command-line entrypoint in `src/entrypoints/` and the Streamlit application in `app.py` expose the same underlying pipeline for operational execution. The code is therefore not centered on the notebook alone: the real system logic resides in the modules under `src/core/`, `src/tools/`, `src/validation/`, `src/cleaning/`, and `src/entrypoints/`.
 
-## Section 1. Introduction
+## Section 1. Introduction  Parte di sofia 
 
 ### 1.1 Project Context and Institutional Setting
 
