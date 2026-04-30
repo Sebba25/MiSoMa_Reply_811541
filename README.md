@@ -95,11 +95,7 @@ The repository therefore **centralizes model configuration, tracing, and retry p
 
 The stage begins with **deterministic profiling** in `src/tools/schema_tools.py`. It computes non-null counts, distinct counts, numeric parse percentages, datetime parse percentages, and representative value samples. 
 
-<<<<<<< Updated upstream
 One particularly important design choice is that the `dtype-inference` prompt does not receive the whole column. It receives a bounded instance of the column built from a random sample of up to 5% of dataset rows, capped at 500 unique non-null values per column, together with the column name and whole-column parse statistics. This is a deliberate compromise between interpretability and cost efficiency. The sample is not enough to reproduce the entire empirical distribution of a large column, but it is often enough to show the agent what the column is trying to represent. If, for example, the raw pandas dtype is `object` but the sampled values are all strings corresponding to numbers between `1` and `12`, the agent can reasonably infer that the true cleaned dtype should be `Int64` rather than free text. In the same way, a column whose raw values are strings may still clearly reveal itself as a date field, a code, or a decimal measure once the sampled values are read together with the column name.
-=======
-One particularly **important design choice** is that the `dtype-inference` prompt does **not receive the whole column**. It receives a **bounded instance** of the column built from up to 100 non-null sampled values, together **with the column name and whole-column parse statistics**. This is a **deliberate compromise** between **interpretability and cost efficiency**. One hundred values are not enough to reproduce the entire empirical distribution of a large column, but they are often **enough to show the agent what the column is trying to represent**. If, for example, the raw pandas dtype is `object` but the sampled values are all strings corresponding to numbers between `1` and `12`, the agent can reasonably infer that the true cleaned dtype should be `Int64` rather than free text. In the same way, a column whose raw values are strings may still clearly reveal itself as a date field, a code, or a decimal measure once the sampled values are read together with the column name.
->>>>>>> Stashed changes
 
 This **sampling strategy** is important because the **repository** does **not want to spend tokens on entire columns** when the **purpose of the stage is conceptual inference** rather than **exhaustive memorization**. The **sample** gives the **LLM a concrete local view of the column**, while the **numeric and datetime parse percentages** give it a **global statistical view** over the full column. In practice, the **agent** is asked to **reason over both perspectives** at once: **what the values look like** in a bounded sample, and **how strongly the entire column behaves** like a numeric or datetime field. This is **what allows the system to remain relatively economical** while **still making a semantically informed dtype decision**.
 
@@ -267,7 +263,6 @@ The **duplicate stage** follows the **same philosophy at row level**. **Exact du
 
 After **schema, completeness, consistency, anomaly, cross-column, and duplicate analyses** have been completed, the **outputs are bundled into a unified validation artifact**. This bundling is necessary because the **cleaning half of the pipeline should consume one coherent view of the dataset rather than several loosely connected reports**.
 
-<<<<<<< Updated upstream
 The remediation planner in remediation.py converts the validation bundle into a structured list of RemediationAction objects. This is the stage where diagnostic findings are translated into explicit allowed interventions. Low-risk and mechanically justified findings, such as safe column renames, dtype casts, placeholder-to-null replacement, exact duplicate-column removal, or exact duplicate-row removal, become auto-applicable actions.
 
 ``` json
@@ -316,9 +311,6 @@ The remediation planner in remediation.py converts the validation bundle into a 
 
 Findings that are more ambiguous, such as anomalies, near-duplicate columns, semantic conflicts, temporal mismatches, date-order violations, or near-duplicate rows, are converted into `manual_review` or `report_only` actions instead of being executed automatically. This policy is especially important because the system has no guaranteed knowledge of the final analytical purpose of the dataset. A suspicious row, an anomaly, a disagreement between semantically similar columns, or a rare category may be simple noise, a dirty entry, a legacy encoding, or genuinely meaningful information that should be preserved because it could be useful or interesting for further analysis. Since that contextual knowledge is not available inside the raw dataset itself, the pipeline adopts a conservative intervention strategy: clear and low-risk transformations can be automated, but ambiguous findings are redirected to manual review rather than modified directly. The underlying principle is that, when the downstream purpose of the data is unknown, it is safer to surface uncertainty than to erase potentially meaningful information.
 
-=======
-The **remediation planner** in `src/cleaning/remediation.py` **translates the findings into an explicit action ledger**. Those actions may include renaming unsafe columns, replacing placeholder tokens with null values, dropping exact duplicate columns, casting dtypes, or generating a cleaner for a specific inconsistent column. Some findings are **converted into manual-review instructions rather than automated actions**. This stage is **deterministic** because the **policy that maps findings to allowed interventions should remain stable, inspectable, and reproducible**.
->>>>>>> Stashed changes
 
 ### 2.12 Cleaning Request Construction
 
