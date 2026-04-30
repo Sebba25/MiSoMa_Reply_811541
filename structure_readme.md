@@ -231,7 +231,7 @@ What it does:
 
 How it does it:
 - The deterministic part in [tools/schema_tools.py](tools/schema_tools.py) builds the column profile.
-- `build_dtype_inference_text(...)` currently samples up to `100` values per column for the dtype prompt.
+- `build_dtype_inference_text(...)` currently samples up to 5% of dataset rows, capped at `500` unique non-null values per column, for the dtype prompt.
 - The `dtype_inference_agent` interprets those statistics and samples to infer:
   - target pandas dtype
   - numeric role or string role
@@ -1049,7 +1049,7 @@ Status: `FLAG`
 Do not keep the current README claim. It is incorrect for the checked-in code.
 
 What the code actually does today:
-- For dtype inference, [tools/schema_tools.py](tools/schema_tools.py) uses `n_rows=100` in `build_dtype_inference_text(...)`.
+- For dtype inference, [tools/schema_tools.py](tools/schema_tools.py) samples up to 5% of dataset rows, capped at `500` unique non-null values per column, in `build_dtype_inference_text(...)`.
 - For outlier transmission in format profiling and cleaner generation, [tools/format_tools.py](tools/format_tools.py) uses `select_outlier_examples(...)` with:
   - `max_shapes=10`
   - `max_per_shape=10`
@@ -1058,9 +1058,9 @@ What the code actually does today:
 - The generator then also receives a few dominant examples, plus the schema-guided expected pattern and strategy text.
 
 What to say now:
-- The real current design is not "500 values per call".
+- The real current design is not "500 values per call" for every dataset and column; `500` is only the upper cap.
 - The real current design is "bounded representative evidence per call", with:
-1. up to `100` sampled values for dtype inference
+1. up to 5% of dataset rows, capped at `500`, sampled values for dtype inference
 2. up to `60` grouped outlier examples for consistency/cleaning evidence
 3. a small number of dominant examples for the target canonical pattern
 
@@ -1071,7 +1071,7 @@ Why this is a room for improvement:
 Recommended notebook addition before answering in the README:
 1. add a cell that prints the exact number of values/examples sent to each agent family
 2. add a cell that estimates prompt tokens from the real payloads
-3. add a short "sampling policy" subsection with the `100` and `60` rules and their file locations
+3. add a short "sampling policy" subsection with the 5%-capped-at-`500` and `60` rules and their file locations
 
 Final README status:
 - Leave the old "500 values" sentence out.

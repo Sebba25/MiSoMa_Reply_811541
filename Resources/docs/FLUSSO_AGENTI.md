@@ -81,7 +81,7 @@ FILE CSV ORIGINALE
 **File coinvolto:** `validation/schema.py`
 
 **Cosa riceve:**
-Un campione del CSV in formato testo — le prime righe di ogni colonna, con i valori reali.
+Un campione del CSV in formato testo — valori reali scelti casualmente per ogni colonna, fino al 5% delle righe del dataset e con limite massimo di 500 valori unici non nulli.
 Viene preparato dalla funzione `build_dtype_inference_text()` in `tools/schema_tools.py`.
 
 **Cosa fa:**
