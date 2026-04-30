@@ -130,7 +130,6 @@ This hybrid design is deliberate. Parse rates and naming rules are straightforwa
       "naming_reason": "Column name contains uppercase letters, which violates the lowercase snake_case naming rule."
     }
 
-
 ### 2.7 Completeness Analysis
 
 Completeness analysis exists because missingness in real datasets is often disguised. A naive null count is usually insufficient. 
@@ -237,6 +236,7 @@ The same deterministic approach is used for the relational checks. Year-month-pe
 
 The duplicate stage follows the same philosophy at row level. Exact duplicate rows are detected after case- and whitespace-normalization of the full row signature. Near-duplicate rows are detected differently: the system first infers a small set of likely business-key columns, preferring identifiers, numeric codes, and temporal keys such as year, month, or `YYYYMM`. Rows that share the same normalized key values are grouped together, and if those rows differ elsewhere in the record they are flagged as near-duplicate groups. This means that near-duplicate rows are not simply "similar-looking" rows. They are rows that appear to refer to the same entity or event under the inferred key columns, while still containing some disagreement in the remaining fields.
 
+``` json
     {
       "columns": [
         "provincia_sede",
@@ -259,12 +259,60 @@ The duplicate stage follows the same philosophy at row level. Exact duplicate ro
       "evidence": "Columns 'provincia_sede' and 'Provincia Sede' normalize to the same schema name but disagree on 105 of 18842 rows where both values are present (99.44% similarity).",
       "suggested_action": "Review whether one column should override the other, whether they need reconciliation rules, or whether both must be preserved separately."
     }
+```
 
 ### 2.11 Validation Bundling and Remediation Planning
 
 After schema, completeness, consistency, anomaly, cross-column, and duplicate analyses have been completed, the outputs are bundled into a unified validation artifact. This bundling is necessary because the cleaning half of the pipeline should consume one coherent view of the dataset rather than several loosely connected reports.
 
-The remediation planner in `src/cleaning/remediation.py` translates the findings into an explicit action ledger. Those actions may include renaming unsafe columns, replacing placeholder tokens with null values, dropping exact duplicate columns, casting dtypes, or generating a cleaner for a specific inconsistent column. Some findings are converted into manual-review instructions rather than automated actions. This stage is deterministic because the policy that maps findings to allowed interventions should remain stable, inspectable, and reproducible.
+The remediation planner in remediation.py converts the validation bundle into a structured list of RemediationAction objects. This is the stage where diagnostic findings are translated into explicit allowed interventions. Low-risk and mechanically justified findings, such as safe column renames, dtype casts, placeholder-to-null replacement, exact duplicate-column removal, or exact duplicate-row removal, become auto-applicable actions.
+
+``` json
+{
+  "dataset_name": "spesa",
+  "actions": [
+    {
+      "action_id": "cast_dtype__aggregation_time__datetime64_ns",
+      "action_type": "cast_dtype",
+      "object_type": "column",
+      "target": {
+        "column_name": "aggregation_time",
+        "target_dtype": "datetime64[ns]"
+      },
+      "source_check": "schema_validation",
+      "confidence": "high",
+      "risk_level": "low",
+      "auto_apply": true,
+      "status": "planned",
+      "reason": "Cast the column to inferred dtype datetime64[ns].",
+      "preview_stats": {
+        "non_null_rows": 7543
+      }
+    },
+    {
+      "action_id": "rename_column__2cod_imposta__cod_imposta_2",
+      "action_type": "rename_column",
+      "object_type": "column",
+      "target": {
+        "column_name": "2cod_imposta",
+        "new_name": "cod_imposta_2"
+      },
+      "source_check": "schema_validation",
+      "confidence": "high",
+      "risk_level": "low",
+      "auto_apply": true,
+      "status": "planned",
+      "reason": "Column name contains a leading digit, which violates the lowercase snake_case naming rule.",
+      "preview_stats": {
+        "non_null_rows": 7543
+      }
+    }
+}
+
+```
+
+Findings that are more ambiguous, such as anomalies, near-duplicate columns, semantic conflicts, temporal mismatches, date-order violations, or near-duplicate rows, are converted into `manual_review` or `report_only` actions instead of being executed automatically. This policy is especially important because the system has no guaranteed knowledge of the final analytical purpose of the dataset. A suspicious row, an anomaly, a disagreement between semantically similar columns, or a rare category may be simple noise, a dirty entry, a legacy encoding, or genuinely meaningful information that should be preserved because it could be useful or interesting for further analysis. Since that contextual knowledge is not available inside the raw dataset itself, the pipeline adopts a conservative intervention strategy: clear and low-risk transformations can be automated, but ambiguous findings are redirected to manual review rather than modified directly. The underlying principle is that, when the downstream purpose of the data is unknown, it is safer to surface uncertainty than to erase potentially meaningful information.
+
 
 ### 2.12 Cleaning Request Construction
 

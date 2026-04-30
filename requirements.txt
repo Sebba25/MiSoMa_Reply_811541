@@ -2,7 +2,7 @@
 pandas>=2.2
 numpy>=1.26
 pydantic>=2.10
-pydantic-ai>=0.0.14
+pydantic-ai>=1.0.0
 openai>=1.30
 
 # Date parsing used by generated cleaners
