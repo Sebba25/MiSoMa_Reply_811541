@@ -456,8 +456,12 @@ def _normalized_row_signature(row: pd.Series) -> tuple[str, ...]:
     return tuple(normalize_cell_text(value) for value in row.tolist())
 
 
-def detect_exact_duplicate_groups(df: pd.DataFrame, max_groups: int = 25) -> list[dict[str, Any]]:
-    """Detect exact duplicate rows after case/whitespace normalization."""
+def detect_exact_duplicate_groups(df: pd.DataFrame, max_groups: int | None = None) -> list[dict[str, Any]]:
+    """Detect exact duplicate rows after case/whitespace normalization.
+
+    Exact duplicate rows are auto-remediated downstream, so the default must be
+    exhaustive. Pass ``max_groups`` only for preview/reporting use cases.
+    """
     grouped: dict[tuple[str, ...], list[int]] = defaultdict(list)
     for index, (_, row) in enumerate(df.iterrows()):
         grouped[_normalized_row_signature(row)].append(index)
@@ -478,7 +482,7 @@ def detect_exact_duplicate_groups(df: pd.DataFrame, max_groups: int = 25) -> lis
                 "suggested_action": "Review whether duplicate rows should be deduplicated or retained as legitimate repeated records.",
             }
         )
-        if len(findings) >= max_groups:
+        if max_groups is not None and len(findings) >= max_groups:
             break
 
     return findings
