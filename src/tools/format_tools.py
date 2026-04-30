@@ -304,9 +304,13 @@ def build_column_format_facts(df, column_name: str) -> ColumnFormatFacts:
         )
 
     # Heuristic thresholds vary by semantic type because "good enough" consistency differs for dates, codes, and measures.
+    # For temporal and identifier columns, numeric_parse_pct >= 85 acts as a secondary gate: a column that is
+    # overwhelmingly numeric even when its values span multiple digit-widths (e.g. month numbers 1–12 split
+    # across shape "9" and shape "99") should still be flagged. The dominant_shape and its validation target
+    # remain unchanged, so zero-padded forms like "03" are still treated as inconsistent against a dominant "9".
     if semantic_hint == "temporal_period":
         machine_format_candidate = (
-            dominant_shape_pct >= 70
+            (dominant_shape_pct >= 70 or profile.numeric_parse_pct >= 85)
             and inconsistent_rows > 0
             and (profile.datetime_parse_pct >= 20 or profile.numeric_parse_pct >= 70)
         )
@@ -318,7 +322,7 @@ def build_column_format_facts(df, column_name: str) -> ColumnFormatFacts:
         )
     elif semantic_hint == "code_or_identifier":
         machine_format_candidate = (
-            dominant_shape_pct >= 85
+            (dominant_shape_pct >= 85 or profile.numeric_parse_pct >= 85)
             and inconsistent_rows > 0
             and distinct_shape_count <= 3
         )

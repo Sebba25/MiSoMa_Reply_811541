@@ -259,7 +259,19 @@ def run_column_format_check(
         )
 
     format_facts = build_column_format_facts(df, column_name)
-    if not format_facts.machine_format_candidate or format_facts.inconsistent_rows <= 0:
+
+    # Bypass the shape-based heuristic when the schema already provides a concrete,
+    # unambiguous pattern for a numeric dtype column. The schema's detected_pattern
+    # is a direct answer to "is there a machine-enforceable format?", making the
+    # machine_format_candidate heuristic redundant for these columns.
+    schema_numeric_override = (
+        schema_entry is not None
+        and schema_entry.detected_pattern
+        and not _schema_pattern_is_ambiguous(schema_entry.detected_pattern)
+        and schema_entry.pandas_dtype in {"Int64", "Float64"}
+    )
+
+    if not schema_numeric_override and (not format_facts.machine_format_candidate or format_facts.inconsistent_rows <= 0):
         return ColumnConsistencyReport(
             finding=None,
             summary=(
