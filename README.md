@@ -576,41 +576,73 @@ For this reason, the present document keeps the experimental design fully visibl
 
 ## Section 4. Results
 
-### 4.1 How Results Are Produced
+The results presented here refer specifically to the cached end-to-end run on the **`spesa.csv` dataset**. They are therefore not illustrative placeholders, but direct outputs derived from the repository artifacts in `Data/.validation_cache/` and `Data/.cleaning_cache/`.
 
-The repository already defines a clear provenance for its results. Schema results are produced by `src/validation/schema.py` from dtype inference, naming checks, and duplicate-semantic grouping. Completeness results are produced by `src/validation/completeness.py` from the deterministic completeness profile and the agent-backed summary. Format-consistency results are produced by `src/validation/consistency.py` from shape profiling and actionable inconsistency detection. Anomaly, cross-column, and duplicate results are produced by their respective validation modules on top of deterministic evidence from `src/tools/quality_tools.py`.
+### 4.1 Changes Applied
 
-Cleaner-generation results are produced by `src/cleaning/generation.py`. Application results are produced by `src/cleaning/application.py`. Verification results are produced by `src/cleaning/verification.py`, which compares the state of the cleaned dataset against the original findings. The final factual synthesis is produced by `src/cleaning/reporting.py` through the `FinalPipelineReport`. This provenance chain matters because it ensures that every value eventually shown in a table or figure can be traced back to a specific stage of the pipeline.
+The first result to emphasize on **`spesa.csv`** is that the system did not respond to the raw dataset with one undifferentiated cleaning pass. The plot below shows the **volume of findings** produced by the validation half and the **volume of decisions** taken by the remediation and cleaning half.
 
-### 4.2 Current Qualitative Findings
+![Pipeline counts that summarize what was found and what was executed](images/findings/02_pipeline_counts.png)
 
-Even before final numerical tables are frozen, the repository already demonstrates several important qualitative outcomes. First, it demonstrates that the project does not treat data quality as a single cleaning action, but as an ordered process in which different issue families are isolated and handled differently. Second, it demonstrates that executable cleaning is not triggered everywhere, but only where the validation layer has established a meaningful normalization target. Third, it demonstrates that generated code is not trusted automatically, because host-side validation and post-application verification remain mandatory stages.
+The validation run identified **8 schema issues**, **9 columns with hidden missingness**, **6 actionable format findings**, **3 anomaly findings**, **6 cross-column findings**, and **49 duplicate groups**. The cleaning half then converted this diagnostic state into **55 applied actions**, while also keeping **32 actions unapplied** and routing **31 cases to manual review**. This is an important result in itself, because it shows that the repository does not equate detection with automatic intervention. A substantial part of the system output remains conservative and review-oriented.
 
-The repository also documents concrete failure modes that influenced the design. Already-valid values can be damaged by overly broad cleaning branches. Date parts can be reordered incorrectly even when delimiters are recognized. Recoverable period-like values can be dropped if the logic is too aggressive. Generated functions can appear correct while still depending on outer-scope variables and therefore fail operationally. Repeated failure loops can arise if generation is retried without structural feedback. These observations are important because they show that the architecture was refined in response to real implementation difficulties rather than being designed only at an abstract level.
+The most relevant direct modifications are shown by the cleaner-impact figure.
 
-### 4.3 Placeholder for Quantitative Run Summary
+![Accepted cleaner impact by column](images/findings/04_cleaner_impact.png)
 
-The final version of this section should contain at least one table generated from code and extracted from a completed run. The most natural source is the final structured report produced after validation, remediation, cleaner generation, application, and verification.
+The run accepted **6 generated cleaners**. Their impact was not evenly distributed across the dataset. The largest changes occurred in `aggregation-time` (**602 rows changed**) and `rata` (**510 rows changed**), followed by `spesa` (**238**), `SPESA TOTALE` (**227**), `ente` (**155**), and `cod_imposta` (**127**). In total, the accepted cleaners modified **1,859 rows**. This distribution is consistent with the architecture described earlier: cleaners were generated only for columns where the validation layer had already established a narrow normalization target.
 
-The intended summary table should include, at minimum, the dataset name, the dataset size, the number of schema issues, the number of columns with hidden missingness, the number of format findings, anomaly findings, cross-column findings, duplicate groups, cleaning requests, accepted cleaners, first-pass accepted cleaners, and verification outcomes grouped into resolved, improved, unchanged, and regressed categories. Until those values are finalized, it is preferable to keep this placeholder explicit rather than filling it with provisional numbers that may later change.
+The verification figure is especially important, because it shows whether those changes actually removed the targeted inconsistencies rather than merely rewriting values.
 
-### 4.4 Placeholder for Figures Generated from Code
+![Targeted format inconsistencies before and after cleaning](images/findings/03_verification_before_after.png)
 
-The course guidelines require that result figures be generated from code. The repository is therefore expected to include at least one figure built from run artifacts rather than inserted as a purely decorative illustration. A natural option would be a compact plot showing the distribution of findings before cleaning and the verification outcomes after cleaning. Another reasonable option would be a per-column summary of actionable format findings and post-cleaning resolution status.
+For the **6 targeted columns**, the total number of inconsistent rows fell from **1,487 before cleaning to 0 after cleaning**, which corresponds to a **100% reduction** for the specific format inconsistencies that were selected for remediation. In other words, the accepted cleaners were not only applied successfully at runtime; they also passed the post-application verification stage on the issues they were meant to resolve.
 
-The architectural diagrams already included earlier in Section 2 are **explanatory figures**, not **result figures**. They help clarify the pipeline structure, but they do not replace the need for at least one figure derived directly from experimental outputs.
+### 4.2 Token Usage and System Costs
 
-### 4.5 Interpretation of the Results
+Because this project studies an agentic pipeline rather than only a static transformation script, the result section should also include the engineering cost of the **`spesa.csv` run**. The Logfire dashboards provide exactly this view.
 
-Once final quantitative runs are available, the main interpretive question should not be limited to how many issues were found. The more meaningful question is how many of the findings were actionable, how many actions were accepted safely, and how much of the targeted inconsistency was actually reduced after verification. In a project of this kind, a smaller number of conservative and verifiably beneficial interventions is more convincing than a larger number of opaque modifications.
+![Logfire token totals by model and by type](images/logfire/03_token_dashboard.png)
 
-The final discussion of results should therefore be organized around validated improvement, not only around raw activity. A system that rewrites many values without clear evidence would be less persuasive than a system that changes fewer values but explains and verifies those changes carefully.
+The token dashboard shows that the observed run consumed about **144.85K input tokens** and **34.79K output tokens**, all under the configured `gpt-5.4-nano` model. The corresponding cost dashboard reports a total model cost of approximately **$0.0704**.
+
+![Logfire model cost dashboard](images/logfire/04_agents_dashboard.png)
+
+This cost should be interpreted together with the run-level and agent-level traces.
+
+![Logfire agent activity cards](images/logfire/05_agents_costs_tokens.jpeg)
+
+The agent cards show that the **`column-cleaner-generator`** was the most active and expensive cleaning-specific component, with **10 runs**, an average time of about **17.9 seconds**, and a cost of about **$0.03**. The **`cleaner-repair-critic`** ran **4 times**, which confirms that the repair loop was actually exercised in practice rather than existing only as a design claim. The narrative layer also incurred visible but smaller overhead, with **10 `narrative-section` runs** at about **$0.01** total.
+
+![Logfire trace of individual calls and durations](images/logfire/07_agents_calls.png)
+
+The call trace further supports the same conclusion. It shows repeated bursts of generator and critic activity, together with a range of call durations extending from a few seconds to over half a minute for some operations. The result is therefore not just "the system worked"; it is that the system worked in a way that remained observable, bounded, and financially modest for the tested run.
+
+### 4.3 Comparison with the Raw Dataset
+
+The final comparison should focus on what changed in **`spesa.csv` at dataset level**, not only on what happened inside the pipeline.
+
+![Raw vs cleaned table-level quality signals](images/findings/01_quality_signals.png)
+
+The cleaned dataset contains **7,518 rows** instead of **7,543**, which is consistent with the removal of **25 exact duplicate rows** during remediation. At table level, the number of **normalized exact duplicate rows** decreases from **41** in the raw dataset to **16** in the cleaned one, while the number of **unsafe column names** decreases from **7** to **1**. These changes are easy to interpret: duplicate-row removal and naming normalization produced visible structural improvement in the cleaned output.
+
+The treatment of placeholder-like values in **`spesa.csv`** is easier to interpret when viewed column by column.
+
+![Placeholder-like values converted to proper nulls, by column](images/findings/01b_placeholder_substitution.png)
+
+This second comparison shows that the cleaning process did not aim to eliminate absence, but to normalize its representation. In columns such as `ente`, `cod_imposta`, and `spesa`, the number of placeholder-like strings in the raw dataset matches the number of cells converted to proper nulls in the cleaned dataset. In `descrizione` and `imposta`, the converted counts are lower than the raw placeholder-like counts, which indicates that the cleaning logic preserved some values instead of collapsing every superficially suspicious token into null. For this reason, the small aggregate shift in missing-like-cell count from **17,811** to **17,802** should not be read as a failure. The intended improvement is representational consistency, not the artificial disappearance of missingness.
+
+The overall summary table makes these comparisons explicit in one place.
+
+![Quantitative summary extracted from the cached pipeline run](images/findings/05_results_summary_table.png)
+
+Taken together, these results show a pattern that is consistent across all figures. The repository improves the dataset most strongly where a narrow target can be justified and verified, reduces structural problems such as duplicate rows and unsafe names, and keeps the cost of the agentic process low enough to remain plausible as a practical workflow rather than only as a conceptual prototype.
 
 ## Section 5. Conclusions
 
 ### 5.1 Main Takeaway
 
-The main contribution of the project is the design of a disciplined multi-agent pipeline for tabular data quality. The repository shows that LLMs can be useful in this domain when they are embedded inside a structured process that preserves deterministic evidence, typed contracts, constrained generation, and external validation. The project therefore contributes less as a demonstration of unconstrained automation and more as an example of how agentic reasoning can be integrated into a safety-oriented data workflow.
+The main conclusion supported by the quantitative figures is that the repository does not merely propose a careful multi-agent architecture in the abstract, but demonstrates that such an architecture can produce measurable cleaning gains while remaining operationally controlled. The findings figures show that the run accepted **6 cleaners**, applied **55 actions**, modified **1,859 rows** through accepted cleaners, and reduced the targeted format inconsistencies from **1,487 rows to 0**, yielding a **100% reduction** on the columns that were explicitly remediated. At the same time, the Logfire screenshots show that this improvement was not obtained through a single opaque model call, but through a traceable sequence of bounded agent runs, repair-critic iterations, and monitored executions, with the reported total model cost remaining modest at about **$0.0704** for the observed run. The project therefore contributes less as a demonstration of unconstrained automation and more as evidence that agentic reasoning can be integrated into a safety-oriented data workflow in which both **data-quality impact** and **execution behavior** remain inspectable.
 
 ### 5.2 Observed Failure Modes
 

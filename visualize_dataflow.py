@@ -157,78 +157,76 @@ def create_validation_flow_detail(output_dir: str = OUTPUT_DIR) -> None:
 # ---------------------------------------------------------------------------
 
 def create_cleaning_flow_detail(output_dir: str = OUTPUT_DIR) -> None:
-    dot = _base_graph("CleaningFlow", "Cleaning pipeline detail", rankdir="TB")
+    dot = _base_graph("CleaningFlow", "Cleaning pipeline detail", rankdir="TB", ranksep="0.9")
 
-    dot.node("in",  "Validation bundle",               fillcolor=COLORS["artifact"])
-    dot.node("rem", "Remediation plan\n(RemediationPlan)", fillcolor=COLORS["artifact"])
-    dot.node("req", "Cleaning requests\n(ColumnCleaningRequest[])", fillcolor=COLORS["artifact"])
-    dot.node("gen", "Cleaner generation\n(generator + critic loop)", fillcolor=COLORS["agent"])
-    dot.node("val", "Host-side\nvalidation",           fillcolor=COLORS["action"])
-    dot.node("prg", "Accepted cleaners\n(ColumnCleanerProgram[])",  fillcolor=COLORS["artifact"])
-    dot.node("app", "Application\n(execute on DataFrame)", fillcolor=COLORS["action"])
-    dot.node("ver", "Verification\n(re-run consistency diff)", fillcolor=COLORS["agent"])
-    dot.node("rpt", "Final report\n(FinalPipelineReport)", fillcolor=COLORS["artifact"])
-    dot.node("out", "Cleaned CSV\n+ Narrative report", fillcolor=COLORS["output"], shape="folder")
+    dot.node("bundle",  "Validation bundle\n(OrchestrationStepResult)",    fillcolor=COLORS["artifact"])
+    dot.node("plan",    "RemediationPlan\n(RemediationAction[])",           fillcolor=COLORS["artifact"])
+    dot.edge("bundle",  "plan")
 
-    dot.edges([
-        ("in",  "rem"),
-        ("rem", "req"),
-        ("req", "gen"),
-        ("gen", "val"),
-        ("val", "prg"),
-        ("prg", "app"),
-        ("app", "ver"),
-        ("ver", "rpt"),
-        ("rpt", "out"),
-    ])
+    # Split auto-apply vs manual
+    dot.node("split",   "Action router",                                    fillcolor=COLORS["action"], shape="diamond")
+    dot.edge("plan",    "split")
 
-    # Reject path back to generator
-    dot.edge("val", "gen", label="rejected →\nrepair prompt", style="dashed",
-             color="#cc3300", fontcolor="#cc3300", constraint="false")
+    dot.node("manual",  "manual_review / report_only\n(no code generated,\nforwarded to report)",
+             fillcolor=COLORS["artifact"])
+    dot.node("auto",    "auto_apply actions\n(cast · rename · placeholder→null\n· exact duplicate drop)",
+             fillcolor=COLORS["artifact"])
+    dot.node("consist", "format_fix actions\n(FormatConsistencyFinding\nper column)",
+             fillcolor=COLORS["artifact"])
 
-    _render(dot, output_dir)
+    with dot.subgraph() as s:
+        s.attr(rank="same")
+        for n in ["manual", "auto", "consist"]:
+            s.node(n)
 
+    dot.edge("split",  "manual",  label="ambiguous /\nhigh risk",  style="dashed", color="#888888", fontcolor="#888888")
+    dot.edge("split",  "auto",    label="low risk")
+    dot.edge("split",  "consist", label="format inconsistency\nfound")
 
-# ---------------------------------------------------------------------------
-# 4. Pydantic model / artifact flow
-# ---------------------------------------------------------------------------
+    # Consist path → generation loop
+    dot.node("req",     "ColumnCleaningRequest\n\ntarget dtype · valid examples\ninconsistent examples · strategy",
+             fillcolor=COLORS["artifact"])
+    dot.node("gen",     "Generator + critic loop\n(see GenerationValidationCycle)",
+             fillcolor=COLORS["agent"])
+    dot.node("cleaners","Accepted cleaners\n(ColumnCleanerProgram[])",      fillcolor=COLORS["artifact"])
 
-def create_schema_flow_diagram(output_dir: str = OUTPUT_DIR) -> None:
-    dot = _base_graph("SchemaFlow", "Pydantic model flow", rankdir="TB", ranksep="0.9")
+    dot.edge("consist", "req")
+    dot.edge("req",     "gen")
+    dot.edge("gen",     "cleaners")
 
-    with dot.subgraph(name="cluster_val_models") as v:
-        v.attr(label="Validation artifacts", style="rounded,filled", fillcolor=COLORS["cluster_v"],
-               color="#3366cc", penwidth="1.2", fontname=FONT, fontsize="11", fontcolor="#3366cc")
-        v.node("di",  "DatasetDtypeInference", fillcolor=COLORS["artifact"])
-        v.node("sh",  "SchemaHandoff",         fillcolor=COLORS["artifact"])
-        v.node("cr",  "CompletenessAnalysisReport",  fillcolor=COLORS["artifact"])
-        v.node("cvr", "ConsistencyValidationReport", fillcolor=COLORS["artifact"])
-        v.node("ar",  "AnomalyDetectionReport",      fillcolor=COLORS["artifact"])
-        v.node("xr",  "CrossColumnValidationReport", fillcolor=COLORS["artifact"])
-        v.node("dr",  "DuplicateDetectionReport",    fillcolor=COLORS["artifact"])
-        v.node("osr", "OrchestrationStepResult",     fillcolor=COLORS["artifact"],
-               style="rounded,filled,bold")
-        v.edge("di",  "sh")
-        for n in ["sh", "cr", "cvr", "ar", "xr", "dr"]:
-            v.edge(n, "osr")
+    # Application stage — ordered execution
+    dot.node("app_label", "Application\n(application.py)\n— ordered execution —",
+             fillcolor=COLORS["action"], style="rounded,filled,bold")
 
-    with dot.subgraph(name="cluster_clean_models") as c:
-        c.attr(label="Cleaning artifacts", style="rounded,filled", fillcolor=COLORS["cluster_c"],
-               color="#cc6600", penwidth="1.2", fontname=FONT, fontsize="11", fontcolor="#cc6600")
-        c.node("rp",  "RemediationPlan",          fillcolor=COLORS["artifact"])
-        c.node("ccr", "ColumnCleaningRequest",     fillcolor=COLORS["artifact"])
-        c.node("ccp", "ColumnCleanerProgram",      fillcolor=COLORS["artifact"])
-        c.node("cpr", "CleaningPipelineResult",    fillcolor=COLORS["artifact"])
-        c.node("fpr", "FinalPipelineReport",       fillcolor=COLORS["artifact"],
-               style="rounded,filled,bold")
-        c.edge("rp",  "ccr",  label="per column")
-        c.edge("ccr", "ccp",  label="generation")
-        c.edge("ccp", "cpr",  label="application")
-        c.edge("cpr", "fpr",  label="narrative")
+    dot.edge("cleaners", "app_label", label="step 1: apply\ngenerated cleaners")
+    dot.edge("auto",     "app_label", label="steps 2–5:\nstructural actions")
 
-    dot.edge("osr", "rp", label="planning")
+    with dot.subgraph(name="cluster_order") as o:
+        o.attr(label="Application order", style="rounded,dashed", color="#777777", fontname=FONT, fontsize="10")
+        o.node("s1", "1. Generated cleaners\n(column identities still intact)", fillcolor=COLORS["action"])
+        o.node("s2", "2. Placeholder → null",                                    fillcolor=COLORS["action"])
+        o.node("s3", "3. Drop exact duplicate columns",                          fillcolor=COLORS["action"])
+        o.node("s4", "4. Column renames",                                        fillcolor=COLORS["action"])
+        o.node("s5", "5. dtype casts",                                           fillcolor=COLORS["action"])
+        o.edges([("s1","s2"),("s2","s3"),("s3","s4"),("s4","s5")])
+
+    dot.edge("app_label", "s1")
+
+    dot.node("cleaned_csv", "Cleaned CSV",                                   fillcolor=COLORS["output"], shape="folder")
+    dot.edge("s5",          "cleaned_csv")
+
+    # Verification feeds into report
+    dot.node("verif",   "Verification\n(re-run consistency diff,\nbefore vs after)",  fillcolor=COLORS["agent"])
+    dot.node("report",  "FinalPipelineReport\n+ Narrative report",                    fillcolor=COLORS["artifact"], style="rounded,filled,bold")
+    dot.node("out",     "Cleaned CSV\n+ Markdown report",                             fillcolor=COLORS["output"], shape="folder")
+
+    dot.edge("cleaned_csv", "verif")
+    dot.edge("manual",      "report", style="dashed", color="#888888")
+    dot.edge("verif",       "report")
+    dot.edge("report",      "out")
 
     _render(dot, output_dir)
+
 
 
 # ---------------------------------------------------------------------------
@@ -445,7 +443,7 @@ def main() -> None:
     create_dataflow_diagram()
     create_validation_flow_detail()
     create_cleaning_flow_detail()
-    create_schema_flow_diagram()
+
     create_generation_validation_cycle()
     create_schema_validation_detail()
     create_consistency_detail()

@@ -59,11 +59,10 @@ def ensure_output_dir() -> None:
 
 def save_quality_signals_chart(quality: pd.DataFrame) -> Path:
     metrics = [
-        ("missing_like_cells", "Missing-like cells"),
         ("normalized_exact_duplicate_rows", "Exact duplicate rows"),
         ("unsafe_column_names", "Unsafe column names"),
     ]
-    fig, axes = plt.subplots(1, 3, figsize=(12.5, 4.8))
+    fig, axes = plt.subplots(1, 2, figsize=(8.5, 4.8))
     width = 0.55
 
     for ax, (key, label) in zip(axes, metrics):
@@ -87,6 +86,82 @@ def save_quality_signals_chart(quality: pd.DataFrame) -> Path:
     fig.suptitle("Raw vs cleaned table-level quality signals", y=1.02)
     fig.tight_layout()
     output_path = OUTPUT_DIR / "01_quality_signals.png"
+    fig.savefig(output_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    return output_path
+
+
+def save_placeholder_substitution_chart(
+    raw_df: pd.DataFrame, cleaned_df: pd.DataFrame, final_report: dict
+) -> Path:
+    """Per-column count of placeholder-like strings that were converted to proper nulls."""
+
+    # Build rename map: original name → cleaned name, from applied rename actions
+    rename_map: dict[str, str] = {}
+    for action in final_report.get("applied_actions", []):
+        if action.get("action_type") == "rename_column":
+            orig = action["target"]["column_name"]
+            new  = action["target"]["new_name"]
+            rename_map[orig] = new
+
+    def placeholder_string_count(df: pd.DataFrame, col: str) -> int:
+        """Count non-NaN cells whose normalised value is a placeholder token."""
+        s = df[col].dropna().astype(str).str.strip().str.lower()
+        return int(s.isin(PLACEHOLDER_TOKENS).sum())
+
+    records = []
+    for col in raw_df.columns:
+        raw_ph = placeholder_string_count(raw_df, col)
+        if raw_ph == 0:
+            continue
+        cleaned_col = rename_map.get(col, col)
+        if cleaned_col not in cleaned_df.columns:
+            continue
+        cleaned_ph = placeholder_string_count(cleaned_df, cleaned_col)
+        substituted = raw_ph - cleaned_ph
+        label = f"{col} → {cleaned_col}" if cleaned_col != col else col
+        if substituted > 0:
+            records.append({"column": label, "raw_placeholders": raw_ph, "substituted": substituted})
+
+    if not records:
+        fig, ax = plt.subplots(figsize=(7, 3))
+        ax.text(0.5, 0.5, "No placeholder substitutions detected", ha="center", va="center", transform=ax.transAxes)
+        ax.axis("off")
+        output_path = OUTPUT_DIR / "01b_placeholder_substitution.png"
+        fig.savefig(output_path, dpi=200, bbox_inches="tight")
+        plt.close(fig)
+        return output_path
+
+    data = pd.DataFrame(records).sort_values("substituted", ascending=True)
+    y = range(len(data))
+    height = 0.36
+    fig, ax = plt.subplots(figsize=(9.5, max(3.5, len(data) * 0.55 + 1.2)))
+
+    ax.barh(
+        [i + height / 2 for i in y], data["raw_placeholders"],
+        height=height, label="Placeholder strings in raw", color="#8aa1c1",
+    )
+    ax.barh(
+        [i - height / 2 for i in y], data["substituted"],
+        height=height, label="Converted to null in cleaned", color="#4c956c",
+    )
+
+    ax.set_yticks(list(y))
+    ax.set_yticklabels(data["column"])
+    ax.set_xlabel("Cell count")
+    ax.set_title("Placeholder-like values converted to proper nulls, by column")
+    ax.legend(frameon=False)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    ax.grid(axis="x", alpha=0.2)
+
+    for ypos, value in zip([i + height / 2 for i in y], data["raw_placeholders"].tolist()):
+        ax.text(value, ypos, f" {value:,}", va="center", fontsize=9)
+    for ypos, value in zip([i - height / 2 for i in y], data["substituted"].tolist()):
+        ax.text(value, ypos, f" {value:,}", va="center", fontsize=9)
+
+    fig.tight_layout()
+    output_path = OUTPUT_DIR / "01b_placeholder_substitution.png"
     fig.savefig(output_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
     return output_path
@@ -270,6 +345,7 @@ def main() -> None:
 
     output_paths = [
         save_quality_signals_chart(quality),
+        save_placeholder_substitution_chart(raw, cleaned, final_report),
         save_pipeline_counts_chart(validation_bundle, final_report, cleaner_manifest),
         save_verification_chart(verification) if not verification.empty else None,
         save_cleaner_impact_chart(cleaners) if not cleaners.empty else None,
