@@ -149,7 +149,7 @@ The rare-category detector follows a different logic because it is designed for 
 
 If the column passes those eligibility checks, the threshold for rarity is computed as
 
-$$ \text{rare_threshold} = \max(1, \lfloor 0.005 \times n \rfloor) $$
+$$ \text{rarethreshold} = \max(1, \lfloor 0.005 \times n \rfloor) $$
 
 where `n` is the number of non-null, non-placeholder rendered values in the column. Every category whose frequency is less than or equal to that threshold is treated as a rare-category candidate. The total number of rows covered by those rare labels becomes the affected-row count. The severity is set to `medium` when at most 5 rows are affected and `low` otherwise, because rare labels are treated as weak anomaly signals rather than as strong evidence of error.
 
@@ -159,7 +159,13 @@ One additional implementation detail matters here. Before the final anomaly repo
 
 Data quality cannot be understood only by inspecting each column independently. A dataset may contain columns that look reasonable in isolation and still contradict one another when compared. Similarly, row-level redundancy introduces a different class of quality issue from format inconsistency.
 
-For this reason, the repository includes deterministic cross-column checks and duplicate detection in `src/tools/quality_tools.py`. The cross-column stage identifies exact duplicate columns, near-duplicate columns, temporal mismatches, and impossible logical relationships. The duplicate stage identifies exact and near-duplicate rows. The corresponding agents, `cross-column-summary` and `duplicate-summary`, are used only to summarize the findings. This design reflects a recurring methodological principle of the project: when a comparison can be executed reliably by code, the LLM should not be asked to rediscover the same fact from raw data.
+For this reason, the repository includes deterministic cross-column checks and duplicate detection in `src/tools/quality_tools.py`. No LLM performs these checks. The corresponding agents, `cross-column-summary` and `duplicate-summary`, are used only afterward to summarize findings that have already been computed by Python. This is an important methodological choice: when a relationship can be measured directly and exactly by code, the project prefers deterministic comparison over model judgment.
+
+The cross-column stage therefore applies explicit programmatic rules. Exact and near-duplicate columns are detected by first restricting the comparison to eligible pairs, meaning columns that belong to the same broad dtype family and are not obviously incomparable, such as free-text columns or a numeric measure compared against a numeric code. Values are normalized for case and whitespace, and the comparison is performed only on rows where both columns contain a real non-placeholder value. At least 20 comparable rows must exist, and the overlap between the two columns must cover at least 80 percent of the smaller present-value set. If the two normalized columns agree on every comparable row, they are flagged as exact duplicate columns. If they do not agree perfectly but still agree on at least 95 percent of comparable rows, and the number of mismatches stays below `max(10, ceil(0.05 * comparable_rows))`, they are flagged as near-duplicate columns. In other words, "near duplicate" here does not mean a vague semantic resemblance. It means a very high row-wise agreement rate under an explicit threshold.
+
+The same deterministic approach is used for the relational checks. Year-month-period mismatches are detected by rebuilding the expected `YYYYMM` key from the year and month columns and comparing it directly against the stored period key. Date-order violations are detected by checking whether a likely start date occurs after a likely end date. These are straightforward logical comparisons, so the repository treats them as rule-based checks rather than as interpretive model tasks.
+
+The duplicate stage follows the same philosophy at row level. Exact duplicate rows are detected after case- and whitespace-normalization of the full row signature. Near-duplicate rows are detected differently: the system first infers a small set of likely business-key columns, preferring identifiers, numeric codes, and temporal keys such as year, month, or `YYYYMM`. Rows that share the same normalized key values are grouped together, and if those rows differ elsewhere in the record they are flagged as near-duplicate groups. This means that near-duplicate rows are not simply "similar-looking" rows. They are rows that appear to refer to the same entity or event under the inferred key columns, while still containing some disagreement in the remaining fields.
 
 ### 2.11 Validation Bundling and Remediation Planning
 
