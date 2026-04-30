@@ -28,13 +28,9 @@ The **objective** of the project is to build a **multi-agent workflow** that rec
 
 The **practical goal** is straightforward: take a messy CSV file, clean it, and produce a report explaining what was wrong and what was fixed. Something you can actually hand to someone and use. The **methodological goal** is about **how you do it**. The point is not just to get a clean file. It is to show that there is a right and a wrong way to use AI agents for this kind of task. The wrong way is to simply ask an LLM to fix the data and trust whatever it gives back. The right way is to keep the AI on a short leash: let deterministic code do the measuring and profiling, force the AI to produce structured outputs that can be checked, make it write cleaning code that gets tested automatically before anything is applied to the real data.
 
-So the deeper claim the project is making is this: the **pipeline design itself** is the **contribution**. The fact that **it works is not just lucky**. It works because of **specific choices about where to use AI and where not to**, and what checks to put in place at every ste
+So the deeper claim the project is making is this: the **pipeline design itself** is the **contribution**. The fact that **it works is not just lucky**. It works because of **specific choices about where to use AI and where not to**, and what checks to put in place at every step.
 
-### 1.4 Why an Agentic Approach Was Chosen
-
-An **agentic approach** was chosen because some **parts of the workflow benefit** from **structured interpretation** and **controlled synthesis**, while **others** are much better **handled by deterministic code**. Profiling parse rates, counting placeholder values, grouping duplicate patterns, or comparing columns are tasks that can be executed more cheaply and more reliably by Python. Interpreting a noisy profile as a cleaned target dtype, writing a concise downstream summary, or generating a narrow column-level normalization function can benefit from an LLM, provided that the model is bounded by clear contracts and that its output is verified externally.
-
-For this reason, the repository implements a **staged multi-agent architecture** rather than a **monolithic prompt**. Each **stage** exists to **answer a specific question** and to **produce a specific artifact**. The **agent** is **never allowed** to become the **sole authority** over the data. The **host environment** remains **responsible** for **validation, orchestration, and final acceptance**.
+The **agentic approach is not an optional addition** to this design. It is what makes the design feasible. Some parts of the workflow inherently require **structured interpretation** that deterministic rules cannot supply: inferring a canonical dtype from a noisy column profile, writing a narrow normalization function for a specific pattern, or producing a concise structured summary of heterogeneous findings. These are tasks where an LLM, when properly bounded, contributes something that static code cannot replicate. At the same time, the **agentic components are never standalone**. Profiling parse rates, counting placeholder values, detecting duplicate patterns, or comparing columns are performed by Python before any model is involved. The agent receives **distilled evidence, not raw data**, and its output is always verified by the host environment before it is trusted. The result is a **staged multi-agent architecture** in which each agent answers a specific question, produces a typed artifact, and is prevented from becoming the sole authority over the data.
 
 ### 1.5 Repository Structure and Usage
 
@@ -44,8 +40,44 @@ The **command-line entrypoints** in `src/entrypoints/` allow the **stages to be 
 
 The **main codebase** is under `src/` and is organized into `core/` for shared logic and models, `tools/` for rule-based data processing, `validation/` for the inspection stages, `cleaning/` for planning fixes, generating code, applying changes, checking results, and reporting.
 
-In order to **run the code**, the **user needs to set up a Python environment** with the **dependencies** listed in `requirements.txt` and to provide an **OpenAI API key** through the environment. 
-After that, to use the project, **install the dependencies** from `requirements.txt`, set your **OpenAI API key**, place the **datasets** in `Data/`, and run the pipeline from the notebook, CLI, or app.
+```
+AgentsAI/
+├── src/
+│   ├── core/
+│   │   ├── agents.py              # Agent definitions, MODEL constant, Logfire setup
+│   │   └── models.py              # Pydantic output models (SchemaHandoff, FormatConsistencyFinding, …)
+│   ├── tools/
+│   │   ├── schema_tools.py        # Deterministic dtype profiling and naming checks
+│   │   ├── completeness_tools.py  # Placeholder detection and completeness profiling
+│   │   ├── format_tools.py        # Shape-based structural profiling
+│   │   └── quality_tools.py       # Anomaly, cross-column, and duplicate detection
+│   ├── validation/
+│   │   ├── schema.py              # Schema validation stage
+│   │   ├── completeness.py        # Completeness analysis stage
+│   │   ├── consistency.py         # Format consistency validation stage
+│   │   ├── anomaly.py             # Anomaly detection stage
+│   │   └── cross_column.py        # Cross-column and duplicate detection stage
+│   ├── cleaning/
+│   │   ├── request.py             # ColumnCleaningRequest construction
+│   │   ├── generation.py          # Cleaner generation and critic–repair loop
+│   │   ├── validation.py          # Host-side cleaner validator
+│   │   ├── application.py         # Apply cleaners and structural actions
+│   │   ├── verification.py        # Post-cleaning verification against original findings
+│   │   └── reporting.py           # FinalPipelineReport assembly
+│   └── entrypoints/
+│       ├── cli.py                 # Argument parsing
+│       └── main.py                # Stage-level orchestration entry point
+├── Data/
+│   ├── spesa.csv                  # Primary evaluation dataset (7 543 rows, 18 columns)
+│   └── attivazioniCessazioni.csv  # Secondary evaluation dataset (20 102 rows, 19 columns)
+├── app.py                         # Streamlit interactive interface
+├── main.ipynb                     # Explanatory notebook (narrative + intermediate artifacts)
+├── requirements.txt
+└── .env                           # OpenAI API key and optional Logfire token (not tracked)
+```
+
+In order to **run the code**, the **user needs to set up a Python environment** with the **dependencies** listed in `requirements.txt` and to provide an **OpenAI API key** through the environment. An optional **Logfire token** can also be provided to enable observability tracing (see Section 2.5 for details).
+After that, to use the project, **install the dependencies** from `requirements.txt`, set the required environment variables, place the **datasets** in `Data/`, and run the pipeline from the notebook, CLI, or app.
 
 
 ## Section 2. Methods
@@ -60,9 +92,7 @@ This architecture serves **two purposes**. The first is **technical safety**. If
 
 ### 2.2 Main Execution Surfaces
 
-The **same pipeline** is exposed through **three complementary execution surfaces**. The **notebook** `main.ipynb` is the **explanatory surface**. It is suitable when the intention is to inspect intermediate artifacts, illustrate the logic of the pipeline, and provide the text-code alternation required by the course. The **command-line interface**, implemented through `src/entrypoints/cli.py` and `src/entrypoints/main.py`, is the **operational surface**. It allows the stages to be run individually or end to end. The **Streamlit application** in `app.py` is the **interactive surface**. It exposes the same stages visually without defining a separate cleaning logic.
-
-This **distinction** matters because the **repository should not be interpreted as a notebook prototype**. The notebook explains the system, but the **orchestration** itself is **implemented in reusable modules**. That design makes it possible to inspect, execute, and present the same workflow in different contexts without rewriting the underlying logic.
+The **same pipeline logic** is exposed through **three surfaces**: the notebook `main.ipynb` for narrative illustration, the CLI in `src/entrypoints/` for stage-by-stage or end-to-end operational runs, and the Streamlit app in `app.py` for interactive use. All three surfaces share the same underlying modules, so the system should not be read as a notebook prototype.
 
 ### 2.3 Data Ingestion and Initial Framing
 
@@ -77,20 +107,27 @@ This choice is central to the **reliability of the pipeline**. In an **agentic w
 
 All **agents are defined** centrally in `src/core/agents.py`, and all runtime control is routed through **shared utilities**. This layer exists because **LLM calls are the least deterministic** and most failure-prone component of the pipeline. Rate limits, transient connection failures, and inconsistent retry logic would make the system difficult to reason about if every module handled them independently.
 
-The repository therefore **centralizes model configuration, tracing, and retry policy**. **Logfire** is used for **observability, and environment variables** are loaded through `python-dotenv`. The **current configuration** in `src/core/agents.py` sets the shared model to `openai-responses:gpt-5.4-nano`, although the design allows the model choice to be changed in one place rather than scattered across the codebase. This **centralization supports repeatability and debugging**: a failed agent call can be inspected as a single event inside a larger engineered process.
+The repository therefore **centralizes model configuration, tracing, and retry policy**. **Logfire** is used for **observability** and **environment variables** are loaded through `python-dotenv`. The **current configuration** in `src/core/agents.py` sets the shared model to `openai-responses:gpt-5.4-nano`, although the design allows the model choice to be changed in one place rather than scattered across the codebase. This **centralization supports repeatability and debugging**: a failed agent call can be inspected as a single event inside a larger engineered process.
+
+**Observability tracing is opt-in and credential-gated**. Logfire instrumentation is activated only when a `LOGFIRE_TOKEN` environment variable is present. If the token is absent, the pipeline runs in full without any tracing side effects. This means that the system can be executed in a minimal environment with only an `OPENAI_API_KEY`, and tracing can be enabled separately when a Logfire project is configured. The `.env` file shown in the repository structure (Section 1.5) is the intended location for both credentials. When Logfire is active, every agent invocation, tool call, retry attempt, and stage transition is recorded as a structured span, which makes it possible to audit exactly what the pipeline did during a run, at what cost, and where failures or retries occurred.
 
 ### 2.6 Schema Validation
-**Schema validation** is the **first domain-facing stage**. Its **purpose** is to **establish what each column is supposed** to **represent after cleaning**, rather than merely describing how the raw values happened to be stored. This **distinction is fundamental**. A column may be loaded as strings while still being, in substance, a date field or a numeric field corrupted by a minority of messy values. What the **system tries to understand** is what a **certain column is meant to represent rather than how it happens to be encoded** in the raw data. The **schema handoff makes this visible** in a concrete way. The following examples are built from real columns in the two datasets currently used in the repository and illustrate the kind of entries the schema stage produces.
+**Schema validation** is the **first domain-facing stage**. Its **purpose** is to **establish what each column is supposed** to **represent after cleaning**, rather than merely describing how the raw values happened to be stored. This **distinction is fundamental**. A column may be loaded as strings while still being, in substance, a date field or a numeric field corrupted by a minority of messy values. What the **system tries to understand** is what a **certain column is meant to represent rather than how it happens to be encoded** in the raw data. The **schema handoff makes this visible** in a concrete way.
 
+Each column that passes through the schema stage produces a `SchemaHandoff` entry (see the JSON artifact later in this section). The most important fields in that entry are `pandas_dtype`, which is the inferred target dtype after cleaning, and `detected_pattern`, which is the canonical form the cleaned values should follow. Both fields are produced by the `dtype-inference` agent from the bounded column profile. The table below maps those fields back to concrete columns from the two evaluation datasets.
 
-| Dataset | Column | Raw pandas dtype at ingestion | Representative observed values | Schema-stage interpretation | Target cleaned dtype and pattern |
-|---------|--------|-------------------------------|--------------------------------|-----------------------------|----------------------------------|
-| `spesa.csv` | `rata` | `object` | `202402`, `2024-06`, `04/2024`, `FEB-2024` | Monthly period key stored through several encodings | `Int64`, pattern `YYYYMM` |
-| `spesa.csv` | `spesa` | `object` | `182904.47999999954`, `2110811.34`, `N.D.` | Decimal monetary measure with placeholder noise | `Float64`, decimal amount pattern |
-| `spesa.csv` | `aggregation-time` | `object` | `2024-03-11T02:01:04.421`, `24.10.2024`, `2024/04/11` | Timestamp field despite mixed rendered layouts | `datetime64[ns]`, datetime target |
-| `attivazioniCessazioni.csv` | `mese` | `object` | `11`, `7`, `NOV`, `Novembre`, `mese 2` | Month indicator encoded as text, abbreviations, and numerals | `Int64`, pattern `month number (1-12)` |
-| `attivazioniCessazioni.csv` | `anno` | `object` | `2023`, `23`, `2023.`, `anno 2023` | Year field with abbreviated and noisy variants | `Int64`, pattern `4-digit year` |
-| `attivazioniCessazioni.csv` | `aggregation-time` | `object` | `2025-06-18T16:15:20.148346`, `GIU 18 2025`, `18.06.2025`, `2025/06/18` | Datetime field rendered through several timestamp and date formats | `datetime64[ns]`, datetime target |
+| Dataset | Column | Raw dtype | Representative raw values | `detected_pattern` | Target `pandas_dtype` |
+|---------|--------|-----------|--------------------------|--------------------|-----------------------|
+| `spesa.csv` | `rata` | `object` | `202402`, `2024-06`, `04/2024`, `FEB-2024` | `YYYYMM period key` | `Int64` |
+| `spesa.csv` | `spesa` | `object` | `182904.47999999954`, `2110811.34`, `N.D.` | decimal amount | `Float64` |
+| `spesa.csv` | `aggregation-time` | `object` | `2024-03-11T02:01:04.421`, `24.10.2024`, `2024/04/11` | ISO-8601 datetime | `datetime64[ns]` |
+| `spesa.csv` | `2cod_imposta` | `object` | `1010`, `1030`, `2010` | integer tax code | `Int64` |
+| `attivazioniCessazioni.csv` | `mese` | `object` | `11`, `7`, `NOV`, `Novembre`, `mese 2` | `month number (1-12)` | `Int64` |
+| `attivazioniCessazioni.csv` | `anno` | `object` | `2023`, `23`, `2023.`, `anno 2023` | `4-digit year` | `Int64` |
+| `attivazioniCessazioni.csv` | `aggregation-time` | `object` | `2025-06-18T16:15:20.148346`, `GIU 18 2025`, `18.06.2025`, `2025/06/18` | ISO-8601 datetime | `datetime64[ns]` |
+| `attivazioniCessazioni.csv` | `provincia_sede` | `object` | `Roma`, `MI`, `NAPOLI`, `Torino ` | normalized province label | `string` |
+
+The `detected_pattern` field is the value that the consistency stage (Section 2.8) will later use as a semantic contract when deciding whether observed value shapes count as inconsistent.
 
 
 The stage begins with **deterministic profiling** in `src/tools/schema_tools.py`. It computes non-null counts, distinct counts, numeric parse percentages, datetime parse percentages, and representative value samples. 
@@ -161,11 +198,15 @@ The **role of the agent** at this stage is not to discover missingness independe
 
 **Format consistency validation** is the **stage that connects diagnosis to executable cleaning**. Its **purpose** is to **identify columns whose values are semantically similar but structurally inconsistent** in ways that justify normalization. Typical examples include mixed date layouts, mixed encodings for period identifiers, or numeric fields that include punctuation or textual noise.
 
-The **first important point** is that the **consistency stage does not start from scratch**. It receives the **schema handoff** described in Section 2.6, and therefore it already knows the **target cleaned dtype** and, when available, the **semantic dominant pattern** inferred earlier. That semantic pattern is stored as `detected_pattern` and **expresses what the column should mean in canonical form**, for example `YYYYMM`, `4-digit year`, or `month number (1-12)`. The consistency stage then **complements that semantic contract with a raw structural profile** computed directly from the observed values in `src/tools/format_tools.py`.
+The **first important point** is that the **consistency stage does not start from scratch**. It receives the **schema handoff** described in Section 2.6, and therefore it already knows the **target cleaned dtype** and, when available, the **semantic canonical pattern** inferred earlier. That semantic pattern is stored as `detected_pattern` in the `SchemaHandoff` object and **expresses what the column should mean in its clean form**, for example `YYYYMM period key`, `4-digit year`, or `month number (1-12)`. The consistency stage then **complements that semantic contract with a raw structural profile** computed directly from the observed values in `src/tools/format_tools.py`.
 
-This **structural profile** is built by **rendering non-null, non-empty values as strings** and **abstracting them through a shape function**. In practice, a value such as `202402` becomes a six-digit shape, a value such as `04/2024` becomes a month-slash-year shape, and a value such as `2025-06-18T16:15:20.148346` becomes a timestamp shape. The profiler **counts how often each shape appears**, **ranks the shapes by frequency**, and defines the **dominant shape** as the most common one among the filtered values. Its relative prevalence becomes `dominant_shape_pct`. This is how the system can say, for instance, that `rata` in `spesa.csv` is mostly six digits, or that `aggregation-time` is mostly rendered as an ISO-like timestamp even though alternative date formats also occur.
+This **structural profile** is built by **rendering non-null, non-empty values as strings** and **abstracting them through a shape function**. The shape function replaces every digit with a representative digit placeholder and every letter with a letter placeholder, collapsing consecutive identical placeholders, so that the surface structure of a value is captured without retaining its actual content. In practice, a value such as `202402` becomes the six-digit shape `999999`, a value such as `04/2024` becomes the shape `99/9999`, and a value such as `2025-06-18T16:15:20.148346` becomes a timestamp shape. The profiler **counts how often each shape appears**, **ranks the shapes by frequency**, and defines the **`dominant_shape`** as the most frequent one among the filtered values. Its relative prevalence is stored as **`dominant_shape_pct`**. Both fields appear in the `ColumnFormatFacts` object that is serialized and passed to the agent on the slow path.
 
-The **connection with Section 2.6** is therefore **precise but subtle**. The **schema-stage** `detected_pattern` is **semantic and canonical**. It **expresses what the cleaned values ought to be**. The **consistency-stage** `dominant_shape` is **empirical and structural**. It **expresses how the raw values are currently written most of the time**. In some columns the two align almost directly. For `rata`, the schema handoff identifies the pattern `YYYYMM`, while the structural profiler sees that the dominant raw shape is a six-digit numeric layout, which is exactly what one expects from a `YYYYMM` code. In other columns the relationship is looser. For `mese`, the schema pattern is `month number (1-12)`, but the raw shapes may split between one-digit months, two-digit months, and textual forms such as `NOV` or `Novembre`. In this case, the **semantic pattern says what the column should represent**, while the **shape profile measures how far the raw encodings drift from that target**.
+The **connection between `detected_pattern` in Section 2.6 and `dominant_shape` in this stage is precise but operates at different levels of abstraction**. The `detected_pattern` from the schema handoff is **semantic and canonical**: it expresses what the cleaned values should mean and what form they should take after normalization. It is produced by the LLM from a bounded profile and a column name. The `dominant_shape` from the consistency stage is **empirical and structural**: it is produced by a deterministic function that renders and abstracts the raw values as they actually appear in the dataset. The two fields therefore answer different questions. `detected_pattern` answers "what should this column look like?" while `dominant_shape` answers "what does this column look like right now, in the majority of rows?"
+
+In practice, the relationship between the two varies by column. For `rata` in `spesa.csv`, the `detected_pattern` is `YYYYMM period key` and the `dominant_shape` is `999999`, a six-digit numeric layout, which is exactly what a `YYYYMM` code produces. The alignment is almost direct. For `mese` in `attivazioniCessazioni.csv`, the `detected_pattern` is `month number (1-12)`, but the raw shapes split between `9` for single-digit months such as `7` and `99` for two-digit months such as `11`, with additional textual shapes for forms like `NOV` or `Novembre`. In this case the `detected_pattern` declares the target, while the `dominant_shape` and its distribution reveal the extent of the drift and which shape families should be treated as already valid versus inconsistent.
+
+This pairing also explains the **schema-driven gate bypass** described later in this section. When the `detected_pattern` from the schema handoff is already unambiguous, the consistency stage can use it directly as a validation contract without asking the LLM to rediscover the target from scratch. The `dominant_shape` is still computed and stored, because it informs the agent about what the majority of rows already look like and which examples must be preserved rather than transformed. But the semantic decision of what the column is supposed to represent has already been made in Section 2.6 and does not need to be repeated.
 
 This **distinction explains the two execution paths** in `src/validation/consistency.py`. If the **schema handoff already provides an unambiguous pattern**, the consistency stage can often take a **deterministic fast path**. This is especially important for **numeric and code-like columns**, where values can be **checked directly against the schema pattern** instead of asking an LLM to rediscover the target. For example, a column whose schema pattern is `month number (1-12)` can be validated against that rule even if valid raw outputs have different widths such as `7` and `11`. If **no stable schema pattern exists**, or if the pattern is too ambiguous to serve as a direct contract, the stage **falls back to the slower agent-backed path**.
 
@@ -461,6 +502,10 @@ These failure modes are significant because they justify several architectural s
 The current system still has important limitations. Final baseline comparisons are not yet fully integrated into the repository-level README results. Consolidated quantitative run tables remain to be finalized. Some intervention classes, especially anomaly handling and row-level duplicates, remain conservative and may require manual review rather than automated correction. The system is therefore not a universal autonomous cleaner for arbitrary datasets, nor is it intended to be interpreted as such.
 
 Another limitation concerns scope. The repository is optimized for structured tabular validation and controlled normalization, not for domain-complete semantic correction. If a value is syntactically valid but factually wrong in a way that requires external business knowledge, the current architecture may flag it as suspicious at best, but it will not necessarily be able to repair it safely.
+
+A further limitation is that the pipeline **does not reason about logical relationships between columns**. Cross-column checks (Section 2.10) apply explicit programmatic rules such as year-month-period consistency and date-order violations, but they do not capture domain-level logical constraints between arbitrary column pairs. An inconsistency that only becomes visible when the semantics of two columns are interpreted jointly — for example, a combination of category and amount that is internally contradictory — will not be detected unless a dedicated rule is defined.
+
+Finally, the system has **limited effectiveness on free-text and general-purpose text columns**. The schema stage can classify a column as `free_text` and the anomaly stage can flag statistical outliers, but neither stage attempts to normalize or validate the content of narrative fields. Columns whose values are prose descriptions, names, or open-ended categorizations are deliberately excluded from most cleaning logic, because there is no stable canonical form against which to validate them.
 
 ### 5.4 Future Work
 
