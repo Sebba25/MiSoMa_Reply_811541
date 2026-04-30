@@ -515,6 +515,7 @@ def _build_cleaner_generation_prompt(
 def run_column_cleaner_program(
     dataset_name: str,
     request: ColumnCleaningRequest,
+    column_values,
     max_attempts: int = 10,
     on_event: ProgressCallback | None = None,
 ) -> ColumnCleanerProgram:
@@ -560,7 +561,7 @@ def run_column_cleaner_program(
             ) from error
 
         # Validate the generated cleaner locally without using another model
-        validation_issues = validate_generated_cleaner_program(request, program)
+        validation_issues = validate_generated_cleaner_program(request, program, column_values=column_values)
         #if there are no validation issues report success
         if not validation_issues:
             progress.generator_accepted(request.column_name, attempt)
@@ -621,6 +622,7 @@ def run_column_cleaner_program(
 async def run_column_cleaner_program_async(
     dataset_name: str,
     request: ColumnCleaningRequest,
+    column_values,
     max_attempts: int = 10,
     on_event: ProgressCallback | None = None,
 ) -> ColumnCleanerProgram:
@@ -661,7 +663,7 @@ async def run_column_cleaner_program_async(
             ) from error
 
         # Validate the generated program locally on the host.
-        validation_issues = validate_generated_cleaner_program(request, program)
+        validation_issues = validate_generated_cleaner_program(request, program, column_values=column_values)
         if not validation_issues:
             progress.generator_accepted(request.column_name, attempt)
             return rebuild_verified_program(request, program)
@@ -725,7 +727,7 @@ def run_cleaner_generation(
 
 async def _run_cleaner_generation_requests_async(
     path,
-    generation_requests: list[tuple[int, str, ColumnCleaningRequest]],
+    generation_requests: list[tuple[int, str, ColumnCleaningRequest, object]],
     total_columns: int,
     max_attempts: int,
     max_workers: int,
@@ -741,6 +743,7 @@ async def _run_cleaner_generation_requests_async(
         idx: int,
         request_column_name: str,
         request: ColumnCleaningRequest,
+        column_values,
     ) -> tuple[int, str, ColumnCleanerProgram | None, ValueError | None]:
         '''Runs the async single-column loop for one request inside the shared semaphore. It uns generation for one column and returns either a program or an error'''
         #Only run if a worker slot is available
@@ -758,7 +761,7 @@ async def _run_cleaner_generation_requests_async(
             try:
                 # Generate and validate a cleaner for this single column
                 program = await run_column_cleaner_program_async( #Run the full async single-column loop
-                    path.stem, request, max_attempts=max_attempts, on_event=on_event
+                    path.stem, request, column_values, max_attempts=max_attempts, on_event=on_event
                 )
             except ValueError as error:
                 # Return the failure instead of raising so the other tasks can continue
@@ -769,8 +772,8 @@ async def _run_cleaner_generation_requests_async(
     #Back in the outer function:
     # Create one async task per requested column.
     tasks = [
-        asyncio.create_task(_run_one_cleaner(idx, request_column_name, request))
-        for idx, request_column_name, request in generation_requests
+        asyncio.create_task(_run_one_cleaner(idx, request_column_name, request, column_values))
+        for idx, request_column_name, request, column_values in generation_requests
     ]
     #Start a list for successful results and a list for failed columns
     completed_results: list[tuple[int, str, ColumnCleanerProgram]] = []
@@ -844,7 +847,7 @@ def _run_cleaner_generation_locked(
     # If parallel work is enabled and there is more than one column, prepare all requests first
     if max_workers > 1 and len(findings) > 1:
         #Start building async generation requests for all columns before running any of them, so the async workers can consume them immediately as they finish.
-        generation_requests: list[tuple[int, str, ColumnCleaningRequest]] = []
+        generation_requests: list[tuple[int, str, ColumnCleaningRequest, object]] = []
         #Loop through each finding
         for idx, finding in enumerate(findings, start=1):
             request_column_name = finding.column_name
@@ -861,7 +864,7 @@ def _run_cleaner_generation_locked(
                 schema_entry,
             )
             #Save the request
-            generation_requests.append((idx, request_column_name, request))
+            generation_requests.append((idx, request_column_name, request, df[request_column_name]))
 
         # Do not create more workers than there are actual requests
         worker_count = min(max_workers, len(generation_requests))
@@ -934,7 +937,7 @@ def _run_cleaner_generation_locked(
             # Run the full single-column generator / validator / critic loop
             #Run the full synchronous single-column generation loop
             program = run_column_cleaner_program(
-                path.stem, request, max_attempts=max_attempts, on_event=on_event
+                path.stem, request, df[column_name], max_attempts=max_attempts, on_event=on_event
             )
             #If generation fails, save the failure
         except ValueError as error:

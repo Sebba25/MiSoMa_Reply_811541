@@ -22,7 +22,7 @@ import re
 import pandas as pd
 
 from src.core.models import CleanerValidationIssue, ColumnCleanerProgram, ColumnCleaningRequest, ExampleTransformation
-from src.tools import matches_numeric_schema_pattern, value_shape
+from src.tools import PLACEHOLDER_TOKENS, matches_numeric_schema_pattern, value_shape
 
 from .runtime import load_cleaner_callable
 
@@ -98,6 +98,50 @@ def expected_year_only_yyyymm_fallback(value: str, request: ColumnCleaningReques
     if match:
         return f"{match.group(1)}01"
     return None
+
+
+def _validate_full_column_dry_run(
+    cleaner,
+    request: ColumnCleaningRequest,
+    column_values: pd.Series | None,
+) -> list[CleanerValidationIssue]:
+    """Dry-run the cleaner on the full target column, skipping null and placeholder values."""
+    if column_values is None:
+        return []
+
+    failing_values: list[str] = []
+    last_error: Exception | None = None
+    for value in column_values:
+        if pd.isna(value):
+            continue
+        rendered = str(value).strip()
+        if not rendered or rendered.lower() in PLACEHOLDER_TOKENS:
+            continue
+        try:
+            cleaner(value)
+        except Exception as error:
+            last_error = error
+            if len(failing_values) < 5:
+                failing_values.append(rendered)
+
+    if last_error is None:
+        return []
+
+    sample_text = ", ".join(repr(value) for value in failing_values)
+    return [
+        build_validation_issue(
+            category="runtime_exception",
+            severity="high",
+            message=(
+                f"Full-column dry run failed for column {request.column_name!r} on non-placeholder values "
+                f"such as {sample_text}: {last_error}"
+            ),
+            expected_behavior=(
+                "generated python_code must execute without exceptions across the full target column after "
+                "skipping null and placeholder-like values handled by other cleaning stages."
+            ),
+        )
+    ]
 
 def _datetime_format_regex_from_example(example: str) -> re.Pattern[str] | None:
     '''Converts a datetime example string into a regex pattern that enforces the same visible layout of digits and separators.'''
@@ -374,6 +418,7 @@ def detect_shadowed_delimiter_branches(program: ColumnCleanerProgram) -> list[Cl
 def validate_generated_cleaner_program(
     request: ColumnCleaningRequest, #cleaning request that contains dominant examples, inconsistent examples, target dtype, and expected pattern
     program: ColumnCleanerProgram, #generated cleaner program to validate
+    column_values: pd.Series | None = None,
 ) -> list[CleanerValidationIssue]:
     '''Validates a generated cleaner by running it on valid and invalid example values'''
     issues: list[CleanerValidationIssue] = [] #Starts with an empty list of issues
@@ -421,6 +466,8 @@ def validate_generated_cleaner_program(
 
     # Add static code issues found before running the cleaner
     issues.extend(detect_shadowed_delimiter_branches(program))
+    # Dry-run the cleaner on the full target column, excluding placeholder-like values handled later in the pipeline.
+    issues.extend(_validate_full_column_dry_run(cleaner, request, column_values))
 
     # Precompute the expected output shape and canonical datetime example
     target_shape = dominant_output_shape(request) #Compute the most common dominant output shape

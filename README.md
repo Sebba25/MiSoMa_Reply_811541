@@ -428,7 +428,7 @@ A **format-consistency finding** is not, by itself, a **sufficient contract for 
 }
 ```
 
-The resulting `ColumnCleaningRequest` is the **direct interface between validation and generation**. It is **particularly important for datetime-like columns**, where careless branch logic can easily damage values that were already valid. For example, a naive cleaner that rewrites any date-looking string could take an already valid value such as `2024-03-11T02:01:04.421`, drop the original time component and fractional seconds, or even reorder the date parts incorrectly while trying to normalize outliers such as `11/01/2024` or `11-11-24`. The **request object makes the preservation requirement explicit instead of leaving it implicit**.
+The resulting `ColumnCleaningRequest` is the **direct interface between validation and generation**. It is **particularly important for datetime-like columns**, where careless branch logic can easily damage values that were already valid. For example, a naive cleaner that rewrites any date-looking string could take an already valid value such as `2024-03-11T02:01:04.421`, drop the original time component and fractional seconds, or even reorder the date parts incorrectly while trying to normalize outliers such as `11/01/2024` or `11-11-24`. The **request object makes the preservation requirement explicit instead of leaving it implicit**. These bounded examples are later reused by the host-side validator, but they are no longer the only acceptance check: before a cleaner is accepted, the repository also performs a **full-column local dry run** on the target column, skipping nulls and placeholder-like tokens that belong to later cleaning stages.
 
 #### 2.6.8 Cleaner Generation, Critic Loop, and Stagnation Control
 
@@ -462,7 +462,81 @@ The repository is built around `pandas`, `numpy`, `pydantic`, `pydantic-ai`, `op
 
 The **prompt design** is also **intentionally token-conscious**. The **system generally does not send full raw columns to the model**. It sends **bounded profiles**, **capped samples**, **representative examples**, and **structured local facts**. This **reduces cost** and **encourages the model to reason over distilled evidence rather than over long noisy inputs**. The **code-execution capability** is enabled only for the `completeness-analysis` and `column-cleaner-generator` agents, and even there it is **bounded**. The repository therefore **uses tool execution as a narrow controlled capability rather than as a free-form sandbox**.
 
+## Section 3. Experimental Design
 
+## 3.1 Main Experimental Purpose
+
+The main purpose of the project was not only to build a data-cleaning pipeline, but to understand which architectural choices make LLM-assisted cleaning reliable enough to be useful on heterogeneous real tabular data. In practice, the project evolved through a trial-and-error process in which several initial designs were found to be too expensive, too brittle, or too difficult to validate, and were then replaced by more constrained alternatives.
+
+More specifically, the experiments were used to validate the target contribution of the repository: a staged pipeline in which local deterministic analysis, bounded agent reasoning, constrained code generation, host-side validation, and post-application verification are combined so that cleaning decisions are both affordable and auditable. The final system should therefore be read not as a single model prompt, but as the result of iterative experimentation on how to distribute work between local code and LLM agents.
+
+## 3.2 Experiment 1: From Full-Column Prompting to Bounded Profiling
+
+Main purpose.
+The first experiment addressed the cost and scalability of schema and format inference. An early design gave the model entire raw columns, but this quickly produced very large prompts and unsustainable token usage on realistic datasets. The goal of this experiment was therefore to determine whether the system could preserve useful semantic inference while drastically reducing prompt size.
+
+Baseline(s).
+The baseline was the earliest full-column prompting strategy, in which the model received much larger portions of raw column content directly. The final approach replaced this with a mixed strategy: a random sample of up to 5% of dataset rows, capped at 500 unique non-null values per column where appropriate, combined with full-column deterministic statistics computed locally.
+
+Evaluation metric(s).
+The main metrics were token consumption, prompt compactness, and whether the agent still produced useful schema and format interpretations. These metrics were appropriate because the objective of this experiment was not to maximize raw recall over every column value, but to make LLM reasoning affordable while preserving enough evidence to infer the intended semantic type and dominant format of a column.
+
+Resulting design decision.
+This experiment led to one of the central design choices of the final repository: the LLM is not given full columns when the task is conceptual inference. Instead, the system provides bounded representative evidence, while local code computes global statistics over the entire dataset. This division of labor reduced cost and made the pipeline feasible on larger datasets.
+
+## 3.3 Experiment 2: From Direct Cleaning to Example-Guided Code Generation
+
+Main purpose.
+A second experimental question was whether the cleaning stage should ask the LLM to reason directly over full raw column contents or whether it should generate executable code from a compact contract. The purpose here was to improve reproducibility and make cleaning behavior inspectable and reusable.
+
+Baseline(s).
+The baseline was a less structured design in which the model was given broader raw evidence and a more open-ended cleaning task. The final design instead constructs a ColumnCleaningRequest containing the target format, dominant valid examples, representative inconsistent examples, and explicit preservation requirements. The generator then produces a self-contained Python function in a remote code-execution sandbox from this compact request rather than from the full column.
+
+Evaluation metric(s).
+The most relevant metrics were cleaner acceptance rate, number of validation failures, and whether already-valid values were preserved. These metrics were chosen because the key risk in this stage was not simply failure to transform outliers, but accidental damage to values that were already correct. The design was therefore evaluated by how well it constrained the model into producing code that was both executable and behaviorally aligned with the intended normalization target.
+
+Resulting design decision.
+This experiment led to a cleaner-generation process in which the LLM sees only distilled examples and structural instructions, not the whole column. The generated code is then host-validated locally on representative valid and inconsistent examples before it is accepted for application. This makes the generation stage cheaper, more inspectable, and more compatible with explicit correctness checks.
+
+## 3.4 Experiment 3: From One-Shot Generation to Validator and Critic Loops
+
+Main purpose.
+A major practical issue during development was that one-shot code generation often produced cleaners that looked plausible but still failed operationally. The purpose of this experiment was to determine whether an explicit host-side validator and repair loop would improve reliability compared with accepting or rejecting one-shot generations.
+
+Baseline(s).
+The baseline was one-shot generation without a structured repair process. The improved design validates generated code locally after each attempt and, when issues are found, passes the authoritative validation failures to a repair critic that guides the next attempt.
+
+Evaluation metric(s).
+The main metrics were first-pass acceptance rate, total retry count, frequency of repeated failure patterns, and the verification outcome after application. These metrics were appropriate because they capture both engineering efficiency and behavioral quality. A cleaner that compiles but repeatedly fails preservation or formatting constraints is not useful, and a cleaner that appears valid but does not improve the final dataset is also not a success.
+
+Resulting design decision.
+This experiment produced the generation-validation-critic loop implemented in the repository. It also motivated the stagnation-control logic: when retries keep reproducing essentially the same failure, the system injects a structural unblock brief and adjusts the temperature conservatively rather than repeating the same attempt indefinitely.
+
+## 3.5 Experiment 4: From Cleaning Acceptance to Post-Application Verification
+Main purpose.
+Another key experimental question was whether local acceptance on representative examples was sufficient to trust a cleaner, or whether the cleaned dataset still needed to be re-evaluated after full-column execution. The purpose of this experiment was to validate the decision to include a separate verification stage.
+
+Baseline(s).
+The baseline was the implicit assumption that a cleaner passing local example-based validation could be treated as successful. The final design instead applies accepted cleaners to the real dataset and then re-runs consistency checks on the cleaned output to compare before-versus-after findings.
+
+Evaluation metric(s).
+The main metrics were verification outcomes classified as resolved, improved, unchanged, or regressed. These metrics were chosen because they directly measure the target contribution of the project: not merely generating code, but producing measurable improvements in data quality without introducing regressions.
+
+Resulting design decision.
+This experiment confirmed that acceptance at the code level should not be treated as final success. In the implemented pipeline, the true success criterion is post-application verification on the cleaned dataset, not just a plausible generated function.
+
+## 3.6 Other Important Design Decisions Shaped by Trial and Error
+Several additional decisions in the final system were also motivated by observed failure modes during development.
+
+First, the project moved toward richer cleaning requests because simpler pattern descriptions were not sufficient to protect already-valid values. In particular, datetime-like and period-like columns required explicit dominant examples, target shape expectations, and recovery rules for partially informative values. Without this richer contract, the generator could normalize outliers while damaging valid entries.
+
+Second, duplicate handling became more explicit and deterministic over time. Exact duplicate rows and columns were separated from more ambiguous near-duplicate or semantic-conflict cases, allowing the system to auto-apply only the lowest-risk actions while leaving ambiguous situations for manual review.
+
+Third, the repository adopted a stronger separation between factual reporting and narrative reporting. This decision emerged from the need to keep final claims grounded in structured artifacts rather than letting free-form text become the primary source of truth. The final narrative is therefore generated only after the factual FinalPipelineReport has already been assembled.
+
+## 3.7 Summary of the Experimental Logic
+
+Taken together, these experiments do not represent a classical benchmark-only evaluation. Instead, they document the iterative process through which the repository’s final contribution emerged: a token-conscious, safety-oriented, auditable LLM cleaning pipeline whose architecture was refined in response to concrete cost, reliability, and validation problems observed during development.
 
 ## Section 3. Experimental Design
 
