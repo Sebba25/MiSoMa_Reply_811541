@@ -305,8 +305,7 @@ def _build_narrative_section_specs(final_report: FinalPipelineReport) -> list[tu
             f"- column={artifact.column_name}; expected_pattern={action.target.get('expected_pattern') if action else 'not available'}; "
             f"inconsistent_rows_before={diff.before_inconsistent_rows if diff else (action.preview_stats.get('inconsistent_rows') if action else 'not available')}; "
             f"verification_status={diff.status if diff else 'not available'}; renamed_to={diff.renamed_to if diff and diff.renamed_to else 'same name'}; "
-            f"bad_value_examples={bad_value_examples or ['none available']}; clean_examples={clean_examples or ['none available']}; "
-            f"unchanged_examples_not_for_bad_values={unchanged_count}; "
+            f"bad_value_examples={bad_value_examples or ['none available']}; unchanged_examples_not_for_bad_values={unchanged_count}; "
             f"summary={artifact.summary}"
         )
     if not format_lines:
@@ -427,12 +426,10 @@ def _build_narrative_section_specs(final_report: FinalPipelineReport) -> list[tu
                     "FORMAT REQUIREMENTS:",
                     "- Start with one short overview sentence.",
                     "- Then give one subsection per cleaned column using the exact heading format: ### column_name",
-                    "- Under each column, use flat markdown bullets for Expected Pattern, Inconsistent Rows, Examples of bad values, Transformation applied, Clean example when available, and Outcome.",
+                    "- Under each column, use flat markdown bullets for Expected Pattern, Inconsistent Rows, Examples of bad values, Transformation applied, and Outcome.",
                     "- Do not collapse multiple columns into one paragraph.",
                     "- Treat bad_value_examples as the only valid source for bad-value lines.",
-                    "- Treat clean_examples as the only valid source for clean-example lines.",
                     "- Never present unchanged preserved values as bad examples.",
-                    "- If clean_examples is empty, omit the Clean example bullet instead of inventing one.",
                     "- Do not use backticks for ordinary column names or example values.",
                     "",
                     f"Generated cleaners count: {len(final_report.generated_cleaners)}",
