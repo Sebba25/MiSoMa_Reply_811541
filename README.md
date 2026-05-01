@@ -250,23 +250,50 @@ The **role of the agent** at this stage is not to discover missingness independe
 
 #### 2.4.4 Format Consistency Validation
 
-**Format consistency validation** is the **stage that connects diagnosis to executable cleaning**. Its **purpose** is to **identify columns whose values are semantically similar but structurally inconsistent** in ways that justify normalization. Typical examples include mixed date layouts, mixed encodings for period identifiers, or numeric fields that include punctuation or textual noise.
+**Format consistency validation** connects diagnosis to executable cleaning. Its purpose is to **identify columns whose values are semantically similar but structurally inconsistent** in ways that justify normalization — typical examples include mixed date layouts, mixed encodings for period identifiers, or numeric fields that include punctuation or textual noise.
 
-The **first important point** is that the **consistency stage does not start from scratch**. It receives the **schema handoff** described in Section 2.4.2, and therefore it already knows the **target cleaned dtype** and, when available, the **semantic canonical pattern** inferred earlier. That semantic pattern is stored as `detected_pattern` in the `SchemaHandoff` object and **expresses what the column should mean in its clean form**, for example `YYYYMM period key`, `4-digit year`, or `month number (1-12)`. The consistency stage then **complements that semantic contract with a raw structural profile** computed directly from the observed values in `src/tools/format_tools.py`.
+##### Inputs from the Schema Handoff
 
-This **structural profile** is built by **rendering non-null, non-empty values as strings** and **abstracting them through a shape function**. The shape function replaces every digit with a representative digit placeholder and every letter with a letter placeholder, collapsing consecutive identical placeholders, so that the surface structure of a value is captured without retaining its actual content. In practice, a value such as `202402` becomes the six-digit shape `999999`, a value such as `04/2024` becomes the shape `99/9999`, and a value such as `2025-06-18T16:15:20.148346` becomes a timestamp shape. The profiler **counts how often each shape appears**, **ranks the shapes by frequency**, and defines the **`dominant_shape`** as the most frequent one among the filtered values. Its relative prevalence is stored as **`dominant_shape_pct`**. Both fields appear in the `ColumnFormatFacts` object that is serialized and passed to the agent on the slow path.
+The consistency stage does not start from scratch. It receives the **schema handoff** described in Section 2.4.2, which already carries the **target cleaned dtype** and, when available, the **`detected_pattern`** inferred during schema inference. That pattern is semantic and canonical: it expresses what the column should mean and what form its values should take after normalization — for example `YYYYMM period key`, `4-digit year`, or `month number (1-12)`. The consistency stage then **complements that semantic contract with a raw structural profile** computed directly from the observed values in `src/tools/format_tools.py`.
+
+##### Shape Profiling
+
+The structural profile is built by **rendering non-null, non-empty values as strings** and **abstracting them through a shape function**. The shape function replaces every digit with a representative digit placeholder and every letter with a letter placeholder, collapsing consecutive identical placeholders, so that surface structure is captured without retaining actual content. For example, `202402` becomes `999999`, `04/2024` becomes `99/9999`, and `2025-06-18T16:15:20.148346` becomes a timestamp shape. The profiler counts how often each shape appears, ranks them by frequency, and defines the **`dominant_shape`** as the most frequent one among the filtered values. Its relative prevalence is stored as **`dominant_shape_pct`**. Both fields appear in the `ColumnFormatFacts` object passed to the agent on the slow path.
+
+The **relationship between `detected_pattern` and `dominant_shape`** operates at different levels of abstraction and the two fields answer different questions:
+
+- **`detected_pattern`** answers *"what should this column look like?"* — produced by the LLM from a bounded profile and a column name, it is the normalization target.
+- **`dominant_shape`** answers *"what does this column look like right now, in the majority of rows?"* — produced deterministically from the raw values as they actually appear.
+
+In practice, the two can align closely or diverge significantly. For `rata` in `spesa.csv`, the `detected_pattern` is `YYYYMM period key` and the `dominant_shape` is `999999` — a direct match. For `mese` in `attivazioniCessazioni.csv`, the `detected_pattern` is `month number (1-12)`, but the raw shapes split between `9` for single-digit months such as `7` and `99` for two-digit months such as `11`, with additional textual shapes for forms like `NOV` or `Novembre`. There the `detected_pattern` declares the target, while the `dominant_shape` distribution reveals the extent of drift and which shape families should be treated as already valid versus inconsistent.
+
+##### Entry Gate Conditions
+
+Before either execution path is taken, two gate conditions extend coverage beyond the shape-based heuristic alone.
+
+1. **Schema-driven bypass for numeric columns.** When an `Int64` or `Float64` column already has a concrete `detected_pattern`, the stage skips the name-based `machine_format_candidate` heuristic and proceeds directly to schema-guided validation — even for columns whose names fall outside the recognized keyword vocabulary.
+2. **`numeric_parse_pct` fallback threshold.** A column such as `month`, whose valid values split across shapes like `9` and `99`, may fail the dominant-shape threshold despite being clearly machine-readable. Adding `numeric_parse_pct >= 85` as a secondary gate lets such columns enter validation without changing the normalization target, so zero-padded values such as `03` can still be treated as inconsistent against a dominant `9`.
+
+##### Fast Path and Slow Path
+
+The two gate conditions feed into two execution paths defined in `src/validation/consistency.py`. When the schema handoff already provides an **unambiguous `detected_pattern`**, the stage takes a **deterministic fast path** and uses that pattern directly as its validation contract, especially for numeric and code-like columns.
 
 ![Format consistency validation: entry gate, schema-guided fast path, and agent-backed slow path](images/flow_diagrams/05_format_consistency_paths.gv.png)
 
-The **connection between `detected_pattern` in Section 2.4.2 and `dominant_shape` in this stage is precise but operates at different levels of abstraction**. The `detected_pattern` from the schema handoff is **semantic and canonical**: it expresses what the cleaned values should mean and what form they should take after normalization. It is produced by the LLM from a bounded profile and a column name. The `dominant_shape` from the consistency stage is **empirical and structural**: it is produced by a deterministic function that renders and abstracts the raw values as they actually appear in the dataset. The two fields therefore answer different questions. `detected_pattern` answers "what should this column look like?" while `dominant_shape` answers "what does this column look like right now, in the majority of rows?"
+The `dominant_shape` confirms what the majority of rows already look like and which examples must be preserved rather than transformed. If **no stable schema pattern exists**, or if the pattern is too ambiguous to serve as a direct contract, the stage **falls back to the agent-backed slow path**.
 
-In practice, the relationship between the two varies by column. For `rata` in `spesa.csv`, the `detected_pattern` is `YYYYMM period key` and the `dominant_shape` is `999999`, a six-digit numeric layout, which is exactly what a `YYYYMM` code produces. The alignment is almost direct. For `mese` in `attivazioniCessazioni.csv`, the `detected_pattern` is `month number (1-12)`, but the raw shapes split between `9` for single-digit months such as `7` and `99` for two-digit months such as `11`, with additional textual shapes for forms like `NOV` or `Novembre`. In this case the `detected_pattern` declares the target, while the `dominant_shape` and its distribution reveal the extent of the drift and which shape families should be treated as already valid versus inconsistent.
+##### Agent Evidence Bundle (Slow Path)
 
-This distinction also explains the **two execution paths** in `src/validation/consistency.py`. When the schema handoff already provides an **unambiguous `detected_pattern`**, the consistency stage can often take a **deterministic fast path** and use that pattern directly as its validation contract, especially for **numeric and code-like columns**. The `dominant_shape` is still computed because it shows what the majority of rows already look like and which examples must be preserved rather than transformed. If **no stable schema pattern exists**, or if the pattern is too ambiguous to serve as a direct contract, the stage **falls back to the slower agent-backed path**.
+On the slow path, the format-consistency agent does not receive the whole raw column. Instead it receives a **compact `ColumnFormatFacts` object** serialized as a plain-text JSON attachment, containing:
 
-Before either path is taken, the stage applies **two gate improvements** that extend coverage beyond the shape-based heuristic alone. The **first** is a **schema-driven bypass** for numeric dtype columns: when an `Int64` or `Float64` column already has a concrete `detected_pattern`, the stage can skip the name-based `machine_format_candidate` heuristic and proceed directly to schema-guided validation, even for columns whose names fall outside the recognized keyword vocabulary. The **second** is a **`numeric_parse_pct` fallback threshold** for temporal and identifier columns. A column such as `month`, whose valid values split across shapes like `9` and `99`, may fail the dominant-shape threshold despite being clearly machine-readable. Adding `numeric_parse_pct >= 85` as a secondary gate lets such columns enter validation without changing the target itself, so zero-padded values such as `03` can still be treated as inconsistent against a dominant `9`.
+- target dtype hint, parse percentages, and empty-like percentage
+- semantic hint (`detected_pattern`), dominant shape, and dominant-shape percentage
+- representative dominant values and grouped inconsistent examples
+- a compact summary of the most frequent raw value shapes
 
-In that **slower path**, the **format-consistency agent still does not receive the whole raw column**. Instead, it receives a **compact `ColumnFormatFacts` object** serialized as a plain-text JSON attachment. That attached artifact contains the target dtype hint, parse percentages, empty-like percentage, semantic hint, dominant shape, dominant-shape percentage, representative dominant values, grouped inconsistent examples, and a compact summary of the most frequent raw value shapes. The **prompt that accompanies the attachment** is also **explicit**: it tells the agent the dataset name, the column name, the total row count, the dominant shape, the percentage of rows matching that dominant shape, the number of inconsistent rows, and, when available, the schema-stage target dtype and semantic role.
+The **prompt** is equally explicit: it states the dataset name, column name, total row count, dominant shape, percentage of rows matching that shape, number of inconsistent rows, and — when available — the schema-stage target dtype and semantic role.
+
+The following artifact illustrates this evidence bundle for the `RATA` column in `spesa.csv`, showing the exact balance the slow path relies on: **global column signals** such as parse rates and dominant-shape prevalence, together with **grouped concrete outliers** that reveal the main inconsistency families.
 
 ```json
 {
@@ -301,11 +328,13 @@ In that **slower path**, the **format-consistency agent still does not receive t
 }
 ```
 
-This kind of artifact is important because it shows the exact balance the slow path relies on: **global column signals** such as parse rates and dominant-shape prevalence, together with **grouped concrete outliers** that reveal the main inconsistency families.
+The amount of evidence is deliberately bounded. Dominant examples are capped at five values, outlier families are grouped and trimmed through `select_outlier_examples(...)`, and the top-shape profile is summarized from a bounded sample rather than the full rendered column. The slow path is therefore **not an unconstrained semantic guess**, but a bounded decision over a pre-structured evidence bundle.
 
-The amount of evidence passed to the agent is deliberately bounded. Dominant examples are capped at five values, outlier families are grouped and trimmed through `select_outlier_examples(...)`, and the top-shape profile is summarized from a bounded sample rather than from the full rendered column. The goal is the same as in schema inference: give the agent enough evidence to understand the main structure of the column without sending every raw row. The **slow path** is therefore **not an unconstrained semantic guess**, but a bounded decision over a pre-structured evidence bundle about whether the observed variation is a **genuine actionable inconsistency**.
+---
 
-This **selectivity is essential**. **Not every variation should trigger cleaning**. Free-text fields, notes, names, or descriptive categorical columns may contain diverse content without containing any format error. The stage therefore emits a `FormatConsistencyFinding` only when a **clear canonical representation exists** and a **measurable inconsistent minority can reasonably be normalized toward it**. This is the **core trigger for later cleaner generation**.
+##### Selectivity and the Trigger Condition
+
+Not every variation should trigger cleaning. Free-text fields, notes, names, or descriptive categorical columns may contain diverse content without containing any format error. The stage therefore emits a `FormatConsistencyFinding` only when a **clear canonical representation exists** and a **measurable inconsistent minority can reasonably be normalized toward it**. This is the core trigger for later cleaner generation.
 
 #### 2.4.5 Anomaly Detection
 
