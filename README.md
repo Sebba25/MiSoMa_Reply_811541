@@ -250,7 +250,7 @@ The **role of the agent** at this stage is not to discover missingness independe
 
 #### 2.4.4 Format Consistency Validation
 
-**Format consistency validation** connects diagnosis to executable cleaning. Its purpose is to **identify columns whose values are semantically similar but structurally inconsistent** in ways that justify normalization — typical examples include mixed date layouts, mixed encodings for period identifiers, or numeric fields that include punctuation or textual noise.
+**Format consistency validation** connects diagnosis to executable cleaning. Its purpose is to **identify columns whose values are semantically similar but structurally inconsistent** in ways that justify normalization. Typical examples include mixed date layouts, mixed encodings for period identifiers, or numeric fields that include punctuation or textual noise.
 
 ##### Inputs from the Schema Handoff
 
@@ -265,13 +265,13 @@ The **relationship between `detected_pattern` and `dominant_shape`** operates at
 - **`detected_pattern`** answers *"what should this column look like?"* — produced by the LLM from a bounded profile and a column name, it is the normalization target.
 - **`dominant_shape`** answers *"what does this column look like right now, in the majority of rows?"* — produced deterministically from the raw values as they actually appear.
 
-In practice, the two can align closely or diverge significantly. For `rata` in `spesa.csv`, the `detected_pattern` is `YYYYMM period key` and the `dominant_shape` is `999999` — a direct match. For `mese` in `attivazioniCessazioni.csv`, the `detected_pattern` is `month number (1-12)`, but the raw shapes split between `9` for single-digit months such as `7` and `99` for two-digit months such as `11`, with additional textual shapes for forms like `NOV` or `Novembre`. There the `detected_pattern` declares the target, while the `dominant_shape` distribution reveals the extent of drift and which shape families should be treated as already valid versus inconsistent.
+In practice, the two can align closely or diverge significantly. For `rata` in `spesa.csv`, the `detected_pattern` is `YYYYMM period key` and the `dominant_shape` is `999999`: a direct match. For `mese` in `attivazioniCessazioni.csv`, the `detected_pattern` is `month number (1-12)`, but the raw shapes split between `9` for single-digit months such as `7` and `99` for two-digit months such as `11`, with additional textual shapes for forms like `NOV` or `Novembre`. There the `detected_pattern` declares the target, while the `dominant_shape` distribution reveals the extent of drift and which shape families should be treated as already valid versus inconsistent.
 
 ##### Entry Gate Conditions
 
 Before either execution path is taken, two gate conditions extend coverage beyond the shape-based heuristic alone.
 
-1. **Schema-driven bypass for numeric columns.** When an `Int64` or `Float64` column already has a concrete `detected_pattern`, the stage skips the name-based `machine_format_candidate` heuristic and proceeds directly to schema-guided validation — even for columns whose names fall outside the recognized keyword vocabulary.
+1. **Schema-driven bypass for numeric columns.** When an `Int64` or `Float64` column already has a concrete `detected_pattern`, the stage skips the name-based `machine_format_candidate` heuristic and proceeds directly to schema-guided validation, even for columns whose names fall outside the recognized keyword vocabulary.
 2. **`numeric_parse_pct` fallback threshold.** A column such as `month`, whose valid values split across shapes like `9` and `99`, may fail the dominant-shape threshold despite being clearly machine-readable. Adding `numeric_parse_pct >= 85` as a secondary gate lets such columns enter validation without changing the normalization target, so zero-padded values such as `03` can still be treated as inconsistent against a dominant `9`.
 
 ##### Fast Path and Slow Path
@@ -291,7 +291,7 @@ On the slow path, the format-consistency agent does not receive the whole raw co
 - representative dominant values and grouped inconsistent examples
 - a compact summary of the most frequent raw value shapes
 
-The **prompt** is equally explicit: it states the dataset name, column name, total row count, dominant shape, percentage of rows matching that shape, number of inconsistent rows, and — when available — the schema-stage target dtype and semantic role.
+The **prompt** is equally explicit: it states the dataset name, column name, total row count, dominant shape, percentage of rows matching that shape, number of inconsistent rows, and, when available, the schema-stage target dtype and semantic role.
 
 The following artifact illustrates this evidence bundle for the `RATA` column in `spesa.csv`, showing the exact balance the slow path relies on: **global column signals** such as parse rates and dominant-shape prevalence, together with **grouped concrete outliers** that reveal the main inconsistency families.
 
@@ -330,8 +330,6 @@ The following artifact illustrates this evidence bundle for the `RATA` column in
 
 The amount of evidence is deliberately bounded. Dominant examples are capped at five values, outlier families are grouped and trimmed through `select_outlier_examples(...)`, and the top-shape profile is summarized from a bounded sample rather than the full rendered column. The slow path is therefore **not an unconstrained semantic guess**, but a bounded decision over a pre-structured evidence bundle.
 
----
-
 ##### Selectivity and the Trigger Condition
 
 Not every variation should trigger cleaning. Free-text fields, notes, names, or descriptive categorical columns may contain diverse content without containing any format error. The stage therefore emits a `FormatConsistencyFinding` only when a **clear canonical representation exists** and a **measurable inconsistent minority can reasonably be normalized toward it**. This is the core trigger for later cleaner generation.
@@ -339,6 +337,27 @@ Not every variation should trigger cleaning. Free-text fields, notes, names, or 
 #### 2.4.5 Anomaly Detection
 
 **Anomaly detection** is separated from format normalization because **suspicious values are not automatically incorrect values**. A large outlier, a rare category, or an unusual code may indicate corruption, but it may also represent a **valid edge case**. **Automatic rewriting** in such cases would be **risky**.
+
+``` json
+    {
+      "column_name": "spesa",
+      "anomaly_type": "numeric_outlier",
+      "severity": "high",
+      "affected_rows": 1101,
+      "example_values": [
+        "43365008.73",
+        "7639226.66",
+        "3887279.49",
+        "9518447.34",
+        "10455819.51",
+        "87912478.86",
+        "6543617.570000316",
+        "6807615.07"
+      ],
+      "evidence": "1101 rows fall outside the robust IQR band [-1879828.180, 2512978.350] computed from Q1=2803.190, Q3=630346.980.",
+      "suggested_action": "Review whether these values are genuine extreme cases or unit/format errors before imputation or removal."
+    }
+```
 
 The system **detects anomaly candidates deterministically** in `src/tools/quality_tools.py`. **Numeric outliers, suspicious negative values in mostly non-negative measures, and rare categorical values are not found by prompting an LLM**, but by **running explicit local rules** over the schema-aware dataset representation. The `anomaly-summary` agent is used only afterward to **write a concise structured summary of findings that have already been computed**.
 
@@ -364,38 +383,12 @@ where `n` is the number of non-null, non-placeholder rendered values in the colu
 
 One additional implementation detail matters here. Before the final anomaly report is assembled, `src/validation/anomaly.py` **suppresses duplicate-semantic aliases** that were already identified in the schema handoff. This **prevents the same anomaly from being reported twice** merely because the dataset contains two columns that normalize to the same meaning. The output of the stage is therefore interpretive rather than generative. It **highlights potential risk signals that deserve attention**, but it does **not convert those signals directly into cleaning code**.
 
-``` json
-    {
-      "column_name": "spesa",
-      "anomaly_type": "numeric_outlier",
-      "severity": "high",
-      "affected_rows": 1101,
-      "example_values": [
-        "43365008.73",
-        "7639226.66",
-        "3887279.49",
-        "9518447.34",
-        "10455819.51",
-        "87912478.86",
-        "6543617.570000316",
-        "6807615.07"
-      ],
-      "evidence": "1101 rows fall outside the robust IQR band [-1879828.180, 2512978.350] computed from Q1=2803.190, Q3=630346.980.",
-      "suggested_action": "Review whether these values are genuine extreme cases or unit/format errors before imputation or removal."
-    }
-```
-
 #### 2.4.6 Cross-Column Validation and Duplicate Detection
 
-**Data quality cannot be understood only by inspecting each column independently**. A dataset may contain columns that **look reasonable in isolation and still contradict one another when compared**. Similarly, **row-level redundancy** introduces a **different class of quality issue** from format inconsistency.
+A dataset may contain columns that look reasonable in **isolation** and still contradict one another when compared. Similarly, **row-level redundancy** introduces a different class of quality issue from format inconsistency.
+For this reason, the system includes **deterministic cross-column checks and duplicate detection** in `src/tools/quality_tools.py`. No LLM performs these checks. The corresponding agents, `cross-column-summary` and `duplicate-summary`, are used only afterward to summarize findings that have already been computed by Python.
 
-For this reason, the system includes **deterministic cross-column checks and duplicate detection** in `src/tools/quality_tools.py`. **No LLM performs these checks**. The corresponding agents, `cross-column-summary` and `duplicate-summary`, are used only afterward to **summarize findings that have already been computed by Python**. This is an **important methodological choice**: when a **relationship can be measured directly and exactly by code**, the project **prefers deterministic comparison over model judgment**.
-
-The **cross-column stage** therefore applies **explicit programmatic rules**. **Exact and near-duplicate columns** are detected by first restricting the comparison to **eligible pairs**, meaning columns that belong to the same broad dtype family and are not obviously incomparable, such as free-text columns or a numeric measure compared against a numeric code. Values are **normalized for case and whitespace**, and the comparison is performed only on rows where **both columns contain** a **real non-placeholder value**. At least 20 comparable rows must exist, and the overlap between the two columns must cover at least 80 percent of the smaller present-value set. If the **two normalized columns agree on every comparable row**, they are **flagged as exact duplicate columns**. If they do not agree perfectly but **still agree on at least 95 percent of comparable rows**, and the number of mismatches stays below `max(10, ceil(0.05 * comparable_rows))`, they are **flagged as near-duplicate columns**. In other words, **"near duplicate" here does not mean a vague semantic resemblance**. It means a **very high row-wise agreement rate under an explicit threshold**.
-
-The **same deterministic approach** is used for the **relational checks**. **Year-month-period mismatches** are detected by rebuilding the expected `YYYYMM` key from the year and month columns and comparing it directly against the stored period key. **Date-order violations** are detected by checking whether a likely start date occurs after a likely end date. These are **straightforward logical comparisons**, so the system **treats them as rule-based checks rather than as interpretive model tasks**.
-
-The **duplicate stage** follows the same philosophy at row level. **Exact duplicate rows** are detected after case- and whitespace-normalization of the full row signature. **Near-duplicate rows** are detected differently: the system first **infers a small set of likely business-key columns**, preferring identifiers, numeric codes, and temporal keys such as year, month, or `YYYYMM`. **Rows that share the same normalized key values** are **grouped together**, and **if those rows differ elsewhere** in the record they are **flagged as near-duplicate groups**. This means that near-duplicate rows are not simply "similar-looking" rows. They are rows that appear to refer to the same entity or event under the inferred key columns, while still containing some disagreement in the remaining fields.
+The **cross-column stage** therefore applies **explicit programmatic rules**. **Exact and near-duplicate columns** are detected by first restricting the comparison to **eligible pairs**, meaning columns that belong to the same broad dtype family and are not obviously incomparable, such as free-text columns or a numeric measure compared against a numeric code. Values are **normalized for case and whitespace**, and the comparison is performed only on rows where **both columns contain** a **real non-placeholder value**. At least 20 comparable rows must exist, and the overlap between the two columns must cover at least 80 percent of the smaller present-value set. If the **two normalized columns agree on every comparable row**, they are **flagged as exact duplicate columns**. If they do not agree perfectly but **still agree on at least 95 percent of comparable rows**, and the number of mismatches stays below `max(10, ceil(0.05 * comparable_rows))`, they are flagged as **near-duplicate columns**.
 
 ``` json
     {
@@ -422,19 +415,19 @@ The **duplicate stage** follows the same philosophy at row level. **Exact duplic
     }
 ```
 
+The **same deterministic approach** is used for the **relational checks**. **Year-month-period mismatches** are detected by rebuilding the expected `YYYYMM` key from the year and month columns and comparing it directly against the stored period key. **Date-order violations** are detected by checking whether a likely start date occurs after a likely end date. These are **straightforward logical comparisons**, so the system **treats them as rule-based checks rather than as interpretive model tasks**.
+
+The **duplicate stage** follows the same philosophy at row level. **Exact duplicate rows** are detected after case and whitespace-normalization of the full row signature. **Near-duplicate rows** are detected differently: the system first infers a small set of likely business-key columns*, preferring identifiers, numeric codes, and temporal keys such as year, month, or `YYYYMM`. Rows that share the same **normalized key values** are **grouped together**, and if those rows differ elsewhere in the record they are **flagged as near-duplicate groups**. This means that near-duplicate rows are not simply "similar-looking" rows. They are rows that appear to refer to the same entity or event under the inferred key columns, while still containing some disagreement in the remaining fields.
+
 #### 2.4.7 Validation Bundling and Remediation Planning
 
 After schema, completeness, consistency, anomaly, cross-column, and duplicate analyses have been completed, the **outputs are bundled into a unified validation artifact**. This bundling is necessary because the cleaning half of the pipeline should consume one coherent view of the dataset rather than several loosely connected reports.
 
 ![Ordered validation flow ending in the validation bundle](images/flow_diagrams/06_validation_stage_pipeline.gv.png)
 
-The diagram above is best read as an **ordered orchestration view** of the validation half. It correctly shows that the **schema stage comes first**, that it contains both deterministic profiling and dtype inference, and that the **validation bundle is assembled only after all six validation stages have been executed**.
+The **remediation planner** in converts the validation bundle into a **structured list of RemediationAction objects**. This is the stage where **diagnostic findings are translated into explicit allowed interventions**. Low-risk and mechanically justified findings, such as safe column renames, dtype casts, placeholder-to-null replacement, exact duplicate-column removal, or exact duplicate-row removal, become auto-applicable actions.
 
-![Remediation planning: from findings to auto-apply and manual-review actions](images/flow_diagrams/07_remediation_planning.gv.png)
-
-![Remediation policy decision tree: how each finding type maps to an action category](images/flow_diagrams/08_remediation_policy_tree.gv.png)
-
-The **remediation planner** in remediation.py converts the validation bundle into a **structured list of RemediationAction objects**. This is the stage where **diagnostic findings are translated into explicit allowed interventions**. Low-risk and mechanically justified findings, such as safe column renames, dtype casts, placeholder-to-null replacement, exact duplicate-column removal, or exact duplicate-row removal, become auto-applicable actions.
+![Remediation policy decision tree: how each finding type maps to an action category](images/flow_diagrams/07_remediation_policy_tree.gv.png)
 
 ``` json
 {
@@ -480,7 +473,7 @@ The **remediation planner** in remediation.py converts the validation bundle int
 
 ```
 
-**Findings** that are **more ambiguous**, such as anomalies, near-duplicate columns, semantic conflicts, temporal mismatches, date-order violations, or near-duplicate rows, are **converted** into `manual_review` or `report_only` actions instead of being executed automatically. This policy is especially important because the s**ystem has no guaranteed knowledge of the final analytical purpose of the dataset**. A suspicious row, an anomaly, a disagreement between semantically similar columns, or a rare category may be simple noise, a dirty entry, a legacy encoding, or genuinely meaningful information that should be preserved because it could be useful or interesting for further analysis. Since that contextual knowledge is not available inside the raw dataset itself, the **pipeline adopts a conservative intervention strategy**: clear and low-risk transformations can be automated, but ambiguous findings are redirected to manual review rather than modified directly. The underlying principle is that, when the downstream purpose of the data is unknown, it is safer to surface uncertainty than to erase potentially meaningful information.
+**Findings** that are **more ambiguous**, such as anomalies, near-duplicate columns, semantic conflicts, temporal mismatches, date-order violations, or near-duplicate rows, are **converted** into `manual_review` or `report_only` actions instead of being executed automatically. This policy is especially important because the system has no **guaranteed knowledge** of the final analytical **purpose of the dataset**. A suspicious row, an anomaly, a disagreement between semantically similar columns, or a rare category may be simple noise, a dirty entry, a legacy encoding, or genuinely meaningful information that should be preserved because it could be useful or interesting for further analysis. Since that contextual knowledge is not available inside the raw dataset itself, the **pipeline adopts a conservative intervention strategy**: clear and low-risk transformations can be automated, but ambiguous findings are redirected to manual review rather than modified directly.
 
 #### 2.4.8 Cleaning Request Construction
 
@@ -516,27 +509,25 @@ The resulting `ColumnCleaningRequest` is the **direct interface between validati
 
 #### 2.4.9 Cleaner Generation, Critic Loop, and Stagnation Control
 
-**Executable cleaning logic** is generated only for columns where the **system has already established that a narrow normalization target exists**. For each `ColumnCleaningRequest`, the `column-cleaner-generator` agent is asked to **produce one self-contained Python function** that receives a scalar value and returns either a cleaned string or `None`. The generator begins from the same **`temperature = 0` baseline** used by the main operational agents, so that runs over the same bounded request remain as reproducible as possible unless the loop later detects stagnation.
+**Executable cleaning logic** is generated only for columns where the system has already established that a **narrow normalization target** exists. For each `ColumnCleaningRequest`, the `column-cleaner-generator` agent is asked to **produce one self-contained Python function** that receives a scalar value and returns either a cleaned string or `None`. The generator begins from the same **`temperature = 0` baseline** used by the main operational agents, so that runs over the same bounded request remain as reproducible as possible unless the loop later detects stagnation.
 
-This **stage is intentionally constrained**. The **generated code is allowed one grouped self-test** through `CodeExecutionTool`, and that permission is bounded in `src/cleaning/generation.py`. The **purpose of that self-test is limited**: it allows the model to try its function on representative already-valid and inconsistent examples before returning it. The self-test does not certify correctness. **Final acceptance remains with the host-side validator** in `src/cleaning/validation.py`.
+This stage is intentionally **constrained**. The **generated code is allowed one grouped self-test** through `CodeExecutionTool`, and that permission is bounded in `src/cleaning/generation.py`. The **purpose of that self-test is limited**: it allows the model to try its function on representative already-valid and inconsistent examples before returning it. The self-test does not certify correctness. **Final acceptance remains with the host-side validator** in `src/cleaning/validation.py`.
+
+![Generation, validation, critic, and stagnation loop](images/flow_diagrams/08_cleaner_generation_loop.gv.png)
 
 If a **generated cleaner fails host-side checks**, the `cleaner-repair-critic` agent receives the **authoritative validation issues** and **writes a diagnosis for the next attempt**. This creates a **repair loop** in which the generator **does not simply retry blindly**, but is **guided by explicit information** about which preservation rule, parsing branch, or structural guard failed.
 
 The implementation also contains a **stagnation mechanism**. This mechanism exists because **repeated failure was observed as a practical issue during development**. A retry loop can become trapped in variants of the same failing control flow. The stagnation detector watches for repeated code or repeated validation fingerprints. When the loop stalls, the prompt **injects a structural unblock brief** and **raises the temperature conservatively from the default deterministic setting into the `0.2` to `0.5` range**. This strategy is documented in the codebase and in the planning notes, but it should be described as the implemented strategy rather than as a benchmark-proven optimum.
 
-![Generation, validation, critic, and stagnation loop](images/flow_diagrams/09_cleaner_generation_loop.gv.png)
-
-This figure belongs here because it captures the **most delicate control loop of the cleaning half**: bounded self-testing, host-side acceptance checks, critic-guided repair, and stagnation handling. In particular, it makes clear that **code generation is not a single-shot step**, but a controlled loop whose output is accepted only after external validation.
-
 #### 2.4.10 Cleaner Application and Verification
 
 Once the **remediation plan** and the **accepted cleaners** are available, the **application stage executes the actions in a specific order**. **Generated cleaners are applied first** while the original column identities are still intact. Placeholder-to-null actions, exact duplicate-column drops, renames, and dtype casts follow in sequence. This ordering is important because an **early rename or cast could interfere with later steps** that still rely on the original structural assumptions.
 
-![Cleaning half pipeline: action router, generation path, application ordering, and verification](images/flow_diagrams/10_cleaning_half_pipeline.gv.png)
+![Cleaning half pipeline: action router, generation path, application ordering, and verification](images/flow_diagrams/09_cleaning_half_pipeline.gv.png)
 
 **Application alone**, however, **is not treated as success**. After the cleaned CSV is produced, the **verification stage** in `src/cleaning/verification.py` **re-runs consistency analysis and compares the new findings against the original ones**. The result is a **structured assessment** of whether each targeted issue was resolved, improved, left unchanged, or regressed. **Verification** is one of the **strongest safeguards** in the system because it **prevents the system from equating successful code generation with successful data-quality improvement**.
 
-![Post-cleaning verification: re-read, reshape, diff engine, and outcome classification](images/flow_diagrams/11_post_cleaning_verification.gv.png)
+![Post-cleaning verification: re-read, reshape, diff engine, and outcome classification](images/flow_diagrams/10_post_cleaning_verification.gv.png)
 
 #### 2.4.11 Final Reporting
 

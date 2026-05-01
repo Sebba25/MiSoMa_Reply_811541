@@ -133,37 +133,47 @@ def create_dataflow_diagram(output_dir: str = OUTPUT_DIR) -> None:
 # ---------------------------------------------------------------------------
 
 def create_validation_flow_detail(output_dir: str = OUTPUT_DIR) -> None:
-    dot = _base_graph("06_validation_stage_pipeline", "Validation pipeline detail", rankdir="TB")
+    dot = _base_graph("06_validation_stage_pipeline", "Validation pipeline detail",
+                      rankdir="TB", ranksep="1.0", nodesep="0.6", concentrate="false")
 
-    dot.node("df",  "Raw DataFrame",    fillcolor=COLORS["source"])
-    dot.node("sch", "Schema handoff\n(SchemaHandoff)",           fillcolor=COLORS["artifact"])
-    dot.node("com", "Completeness report\n(CompletenessAnalysisReport)", fillcolor=COLORS["artifact"])
-    dot.node("con", "Consistency report\n(ConsistencyValidationReport)", fillcolor=COLORS["artifact"])
-    dot.node("ano", "Anomaly report\n(AnomalyDetectionReport)",  fillcolor=COLORS["artifact"])
-    dot.node("cro", "Cross-column report\n(CrossColumnValidationReport)", fillcolor=COLORS["artifact"])
-    dot.node("dup", "Duplicate report\n(DuplicateDetectionReport)", fillcolor=COLORS["artifact"])
-    dot.node("bun", "Validation bundle\n(OrchestrationStepResult)", fillcolor=COLORS["artifact"],
-             style="rounded,filled,bold")
+    dot.node("df", "Raw DataFrame", fillcolor=COLORS["source"])
 
-    # Schema has an internal dtype-inference sub-step
+    # Schema stage cluster — sch lives inside the cluster
     with dot.subgraph(name="cluster_schema") as s:
         s.attr(label="Schema stage", style="rounded,filled", fillcolor=COLORS["cluster_v"],
                color="#22A30A", penwidth="1.5", fontname=FONT, fontsize="10", fontcolor="#22A30A")
         s.node("prof",  "Deterministic\nprofiling",     fillcolor=COLORS["action"])
         s.node("dtype", "dtype-inference\nagent",       fillcolor=COLORS["agent"])
         s.node("name",  "Naming &\nduplication checks", fillcolor=COLORS["action"])
+        s.node("sch",   "Schema handoff\n(SchemaHandoff)", fillcolor=COLORS["artifact"],
+               style="rounded,filled,bold")
         s.edge("prof",  "dtype")
         s.edge("prof",  "name")
         s.edge("dtype", "sch")
         s.edge("name",  "sch")
 
-    dot.edge("df",  "prof")
-    dot.edge("sch", "com", label="schema passed\nforward to all stages", style="dashed", color="#888888")
-    dot.edge("com", "con")
-    dot.edge("con", "ano")
-    dot.edge("ano", "cro")
-    dot.edge("cro", "dup")
-    dot.edge("dup", "bun")
+    dot.edge("df", "prof")
+
+    # Five report nodes on the same horizontal rank below the cluster
+    with dot.subgraph() as s:
+        s.attr(rank="same")
+        s.node("com", "Completeness report\n(CompletenessAnalysisReport)", fillcolor=COLORS["artifact"])
+        s.node("con", "Consistency report\n(ConsistencyValidationReport)",  fillcolor=COLORS["artifact"])
+        s.node("ano", "Anomaly report\n(AnomalyDetectionReport)",           fillcolor=COLORS["artifact"])
+        s.node("cro", "Cross-column report\n(CrossColumnValidationReport)", fillcolor=COLORS["artifact"])
+        s.node("dup", "Duplicate report\n(DuplicateDetectionReport)",       fillcolor=COLORS["artifact"])
+    for a, b in [("com","con"),("con","ano"),("ano","cro"),("cro","dup")]:
+        dot.edge(a, b, style="invis")
+
+    # sch fans out to all five report nodes (dashed)
+    for stage in ["com", "con", "ano", "cro", "dup"]:
+        dot.edge("sch", stage, style="dashed", color="#888888")
+
+    # All five feed the validation bundle
+    dot.node("bun", "Validation bundle\n(OrchestrationStepResult)", fillcolor=COLORS["artifact"],
+             style="rounded,filled,bold")
+    for stage in ["com", "con", "ano", "cro", "dup"]:
+        dot.edge(stage, "bun")
 
     _render(dot, output_dir)
 
@@ -173,7 +183,7 @@ def create_validation_flow_detail(output_dir: str = OUTPUT_DIR) -> None:
 # ---------------------------------------------------------------------------
 
 def create_cleaning_flow_detail(output_dir: str = OUTPUT_DIR) -> None:
-    dot = _base_graph("10_cleaning_half_pipeline", "Cleaning pipeline detail", rankdir="TB", ranksep="0.9")
+    dot = _base_graph("09_cleaning_half_pipeline", "Cleaning pipeline detail", rankdir="TB", ranksep="0.9")
 
     dot.node("bundle",  "Validation bundle\n(OrchestrationStepResult)",    fillcolor=COLORS["artifact"])
     dot.node("plan",    "RemediationPlan\n(RemediationAction[])",           fillcolor=COLORS["artifact"])
@@ -251,22 +261,29 @@ def create_cleaning_flow_detail(output_dir: str = OUTPUT_DIR) -> None:
 # ---------------------------------------------------------------------------
 
 def create_generation_validation_cycle(output_dir: str = OUTPUT_DIR) -> None:
-    dot = _base_graph("09_cleaner_generation_loop", "Code generation cycle", rankdir="TB", ranksep="0.85")
+    dot = _base_graph("08_cleaner_generation_loop", "Code generation cycle", rankdir="TB", ranksep="1.1", nodesep="0.9", splines="polyline")
 
     dot.node("req",  "ColumnCleaningRequest\n(target dtype, valid examples,\ninconsistent examples)", fillcolor=COLORS["artifact"])
     dot.node("gen",  "Generator agent\n(writes Python cleaner fn)", fillcolor=COLORS["agent"])
     dot.node("self", "Self-test\n(CodeExecutionTool,\nbounded)", fillcolor=COLORS["action"])
     dot.node("hval", "Host-side validation\n(syntax · signature · security\n· preservation rules)", fillcolor=COLORS["action"])
-    dot.node("ok",   "Cleaner accepted\n(ColumnCleanerProgram)", fillcolor=COLORS["output"])
-    dot.node("crit", "Critic agent\n(diagnosis of\nfailed checks)", fillcolor=COLORS["agent"])
-    dot.node("stag", "Stagnation detector\n(repeated code / fingerprint\n→ raise temperature)", fillcolor=COLORS["action"])
+    dot.node("ok",      "Cleaner accepted\n(ColumnCleanerProgram)", fillcolor=COLORS["output"])
+    dot.node("rebuild", "rebuild_verified_program\n(re-parse · strip artefacts\n· final signature check)", fillcolor=COLORS["action"])
+    dot.node("crit",    "Critic agent\n(diagnosis of\nfailed checks)", fillcolor=COLORS["agent"])
+    dot.node("stag",    "Stagnation detector\n(repeated code / fingerprint\n→ raise temperature)", fillcolor=COLORS["action"])
 
     dot.edges([
-        ("req",  "gen"),
-        ("gen",  "self"),
-        ("self", "hval"),
-        ("hval", "ok",   ),
+        ("req",     "gen"),
+        ("gen",     "self"),
+        ("self",    "hval"),
+        ("hval",    "ok"),
+        ("ok",      "rebuild"),
     ])
+
+    with dot.subgraph() as s:
+        s.attr(rank="same")
+        s.node("ok")
+        s.node("stag")
 
     # Failure loop
     dot.edge("hval", "crit", label="checks failed", style="dashed", color="#888888", fontcolor="#888888")
@@ -359,59 +376,11 @@ def create_consistency_detail(output_dir: str = OUTPUT_DIR) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 8. Remediation planning — findings → actions
-# ---------------------------------------------------------------------------
-
-def create_remediation_detail(output_dir: str = OUTPUT_DIR) -> None:
-    dot = _base_graph("07_remediation_planning", "Remediation planning", rankdir="TB", ranksep="0.85")
-
-    dot.node("bundle", "Validation bundle\n(OrchestrationStepResult)", fillcolor=COLORS["artifact"])
-
-    # Finding families (same rank)
-    with dot.subgraph() as s:
-        s.attr(rank="same")
-        s.node("schema_f",   "Schema findings\n(dtype cast, rename,\nduplicate columns)",  fillcolor=COLORS["artifact"])
-        s.node("complete_f", "Completeness findings\n(placeholder tokens,\nsparse columns)", fillcolor=COLORS["artifact"])
-        s.node("consist_f",  "Consistency findings\n(FormatConsistencyFinding)",            fillcolor=COLORS["artifact"])
-        s.node("other_f",    "Anomaly · cross-column\n· duplicate findings",                fillcolor=COLORS["artifact"])
-
-    dot.edge("bundle", "schema_f")
-    dot.edge("bundle", "complete_f")
-    dot.edge("bundle", "consist_f")
-    dot.edge("bundle", "other_f")
-
-    dot.node("planner", "Remediation planner\n(remediation.py)\n\nclassifies each finding\nby risk level and evidence strength",
-             fillcolor=COLORS["agent"])
-
-    for n in ["schema_f", "complete_f", "consist_f", "other_f"]:
-        dot.edge(n, "planner")
-
-    # Decision split
-    dot.node("decision", "Risk classification",
-             fillcolor=COLORS["action"], shape="diamond")
-    dot.edge("planner", "decision")
-
-    dot.node("auto",   "auto_apply = True\n\ndtype cast · safe rename\nplaceholder→null\nexact duplicate column/row drop",
-             fillcolor=COLORS["output"])
-    dot.node("manual", "manual_review / report_only\n\nanomalies · near-duplicate columns\nsemantic conflicts · date-order violations\nnear-duplicate rows",
-             fillcolor=COLORS["artifact"])
-
-    dot.edge("decision", "auto",   label="low risk,\nmechanically justified")
-    dot.edge("decision", "manual", label="ambiguous or\nhigh impact")
-
-    dot.node("plan", "RemediationPlan\n(RemediationAction[])", fillcolor=COLORS["artifact"], style="rounded,filled,bold")
-    dot.edge("auto",   "plan")
-    dot.edge("manual", "plan")
-
-    _render(dot, output_dir)
-
-
-# ---------------------------------------------------------------------------
 # 9. Verification — before/after comparison
 # ---------------------------------------------------------------------------
 
 def create_verification_detail(output_dir: str = OUTPUT_DIR) -> None:
-    dot = _base_graph("11_post_cleaning_verification", "Post-cleaning verification", rankdir="TB", ranksep="0.9")
+    dot = _base_graph("10_post_cleaning_verification", "Post-cleaning verification", rankdir="TB", ranksep="0.9")
 
     dot.node("orig_csv",  "Original CSV",          fillcolor=COLORS["source"], shape="folder")
     dot.node("clean_csv", "Cleaned CSV",            fillcolor=COLORS["output"], shape="folder")
@@ -498,53 +467,56 @@ def create_completeness_flow(output_dir: str = OUTPUT_DIR) -> None:
 # ---------------------------------------------------------------------------
 
 def create_remediation_policy_tree(output_dir: str = OUTPUT_DIR) -> None:
-    dot = _base_graph("08_remediation_policy_tree", "Remediation policy: finding to action category",
-                      rankdir="TB", ranksep="0.9")
+    dot = _base_graph("07_remediation_policy_tree", "Remediation policy: finding to action category",
+                      rankdir="TB", ranksep="1.2", nodesep="0.9", concentrate="false")
 
-    dot.node("finding", "Validation finding\n(any stage)",             fillcolor=COLORS["artifact"])
+    dot.node("finding", "Validation finding\n(any stage)", fillcolor=COLORS["artifact"])
 
     # Gate 1 — source stage
-    dot.node("g1", "Source stage?",                                     fillcolor=COLORS["action"], shape="diamond")
+    dot.node("g1", "Source stage?", fillcolor=COLORS["action"], shape="diamond")
     dot.edge("finding", "g1")
 
-    # Schema / completeness branch
-    dot.node("g2", "Action type?",                                      fillcolor=COLORS["action"], shape="diamond")
-    dot.edge("g1", "g2", label="schema /\ncompleteness")
+    # Force the three second-level diamonds on the same rank with spacing
+    with dot.subgraph() as s:
+        s.attr(rank="same")
+        s.node("g2", "Action type?",              fillcolor=COLORS["action"], shape="diamond")
+        s.node("g3", "Canonical target\nunambiguous?", fillcolor=COLORS["action"], shape="diamond")
+        s.node("g4", "Risk level?",               fillcolor=COLORS["action"], shape="diamond")
+    for a, b in [("g2","g3"),("g3","g4")]:
+        dot.edge(a, b, style="invis")
 
-    dot.node("auto_struct", "auto_apply = True\n\ndtype cast\nsafe rename\nplaceholder → null\nexact duplicate\ncolumn / row drop",
-             fillcolor=COLORS["output"])
-    dot.edge("g2", "auto_struct", label="structural,\nmechanical")
+    dot.edge("g1", "g2", xlabel="schema /\ncompleteness")
+    dot.edge("g1", "g3", xlabel="consistency")
+    dot.edge("g1", "g4", xlabel="anomaly /\ncross-column /\nduplicate")
 
-    dot.node("manual_schema", "manual_review\n\nunsafe rename\nnear-duplicate columns\nsemantic conflict",
-             fillcolor=COLORS["artifact"])
-    dot.edge("g2", "manual_schema", label="ambiguous /\nhigh impact")
+    # Force all six leaf nodes on the same rank
+    with dot.subgraph() as s:
+        s.attr(rank="same")
+        s.node("auto_struct", "auto_apply = True\n\ndtype cast · safe rename\nplaceholder → null\nexact duplicate\ncolumn / row drop",
+               fillcolor=COLORS["output"])
+        s.node("manual_schema", "manual_review\n\nunsafe rename\nnear-duplicate columns\nsemantic conflict",
+               fillcolor=COLORS["artifact"])
+        s.node("format_fix", "format_fix action\n→ ColumnCleaningRequest\n→ cleaner generation loop",
+               fillcolor=COLORS["agent"])
+        s.node("report_only_c", "report_only\n(no safe target\ncan be defined)",
+               fillcolor=COLORS["artifact"])
+        s.node("auto_dup", "auto_apply = True\n\nexact duplicate rows\nexact duplicate columns",
+               fillcolor=COLORS["output"])
+        s.node("manual_amb", "manual_review\n\nnear-duplicate rows/columns\ndate-order violations\ntemporal mismatches\nrare categories · numeric outliers",
+               fillcolor=COLORS["artifact"])
+    for a, b in [("auto_struct","manual_schema"),("manual_schema","format_fix"),
+                 ("format_fix","report_only_c"),("report_only_c","auto_dup"),("auto_dup","manual_amb")]:
+        dot.edge(a, b, style="invis")
 
-    # Consistency branch
-    dot.node("g3", "Canonical target\nunambiguous?",                    fillcolor=COLORS["action"], shape="diamond")
-    dot.edge("g1", "g3", label="consistency")
+    dot.edge("g2", "auto_struct",   xlabel="structural,\nmechanical", minlen="2")
+    dot.edge("g2", "manual_schema", xlabel="ambiguous /\nhigh impact", minlen="2")
+    dot.edge("g3", "format_fix",    xlabel="yes", minlen="2")
+    dot.edge("g3", "report_only_c", xlabel="no",  minlen="2")
+    dot.edge("g4", "auto_dup",      xlabel="low risk\n(exact duplicate)", minlen="2")
+    dot.edge("g4", "manual_amb",    xlabel="medium / high\nor ambiguous",  minlen="2")
 
-    dot.node("format_fix", "format_fix action\n→ ColumnCleaningRequest\n→ cleaner generation loop",
-             fillcolor=COLORS["agent"])
-    dot.edge("g3", "format_fix", label="yes")
-
-    dot.node("report_only_c", "report_only\n(no safe target\ncan be defined)",
-             fillcolor=COLORS["artifact"])
-    dot.edge("g3", "report_only_c", label="no")
-
-    # Anomaly / cross-column / duplicate branch
-    dot.node("g4", "Risk level?",                                       fillcolor=COLORS["action"], shape="diamond")
-    dot.edge("g1", "g4", label="anomaly /\ncross-column /\nduplicate")
-
-    dot.node("auto_dup", "auto_apply = True\n\nexact duplicate rows\nexact duplicate columns",
-             fillcolor=COLORS["output"])
-    dot.edge("g4", "auto_dup", label="low risk\n(exact duplicate)")
-
-    dot.node("manual_amb", "manual_review\n\nnear-duplicate rows/columns\ndate-order violations\ntemporal mismatches\nrare categories\nnumeric outliers",
-             fillcolor=COLORS["artifact"])
-    dot.edge("g4", "manual_amb", label="medium / high\nor ambiguous")
-
-    # All paths feed into plan
-    dot.node("plan", "RemediationPlan\n(RemediationAction[])",          fillcolor=COLORS["artifact"], style="rounded,filled,bold")
+    dot.node("plan", "RemediationPlan\n(RemediationAction[])",
+             fillcolor=COLORS["artifact"], style="rounded,filled,bold")
     for src in ["auto_struct", "manual_schema", "format_fix", "report_only_c", "auto_dup", "manual_amb"]:
         dot.edge(src, "plan")
 
@@ -643,7 +615,6 @@ def main() -> None:
     create_generation_validation_cycle()
     create_schema_validation_detail()
     create_consistency_detail()
-    create_remediation_detail()
     create_verification_detail()
     create_completeness_flow()
     create_remediation_policy_tree()
