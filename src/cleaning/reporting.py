@@ -350,7 +350,7 @@ def _build_narrative_section_specs(final_report: FinalPipelineReport) -> list[tu
         )[:40]
     ] or ["- No remediation actions were recorded."]
     verification_lines = [
-        f"- column={diff.column_name}, renamed_to={diff.renamed_to}, status={diff.status}, before={diff.before_inconsistent_rows}, after={diff.after_inconsistent_rows}, remaining={diff.remaining_examples[:5]}"
+        f"- column={diff.column_name}, renamed_to={diff.renamed_to or diff.column_name}, status={diff.status}, before={diff.before_inconsistent_rows}, after={diff.after_inconsistent_rows}, remaining={diff.remaining_examples[:5]}"
         for diff in final_report.verification_diffs
     ] or [f"- Verification summary only: {final_report.verification_summary}"]
     risk_lines = [
