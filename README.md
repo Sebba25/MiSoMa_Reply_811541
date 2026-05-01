@@ -112,6 +112,8 @@ LOGFIRE_TOKEN=your_logfire_token_here  # optional
 
 The `LOGFIRE_TOKEN` is optional and enables the observability tracing described in Section 2.3.
 
+The input dataset must be placed inside the `Data/` folder at the repository root. The default file expected by the pipeline is `Data/spesa.csv`; any other CSV dataset should be placed in the same folder and referenced by name when invoking the CLI, the Streamlit app or in the notebook.
+
 After the environment is ready, you can use the notebook, the CLI, or the Streamlit app. The Streamlit application can be launched with:
 
 ```powershell
