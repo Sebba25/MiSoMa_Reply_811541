@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import html
 from datetime import datetime
 from pathlib import Path
@@ -1090,6 +1091,34 @@ details[data-testid="stStatus"] > div,
     margin: 2.5rem 0;
     letter-spacing: 1rem;
 }
+
+/* Small Reply corner mark */
+.reply-corner {
+    position: fixed;
+    top: 0.9rem;
+    right: 1rem;
+    width: 104px;
+    z-index: 1000;
+    opacity: 0.9;
+    pointer-events: none;
+}
+.reply-corner svg {
+    display: block;
+    width: 100%;
+    height: auto;
+}
+.reply-corner img {
+    display: block;
+    width: 100%;
+    height: auto;
+}
+@media (max-width: 900px) {
+    .reply-corner {
+        width: 82px;
+        top: 0.7rem;
+        right: 0.7rem;
+    }
+}
 </style>
 """
 
@@ -1144,6 +1173,21 @@ def _masthead() -> None:
                 No. {datetime.now().strftime("%Y.%m")}<br/>
                 <b>{now}</b>
             </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _reply_corner_logo() -> None:
+    logo_path = Path(__file__).parent / "images" / "reply_logo.png"
+    if not logo_path.exists():
+        return
+    encoded_logo = base64.b64encode(logo_path.read_bytes()).decode("ascii")
+    st.markdown(
+        f"""
+        <div class="reply-corner" aria-hidden="true">
+            <img src="data:image/png;base64,{encoded_logo}" alt="Reply" />
         </div>
         """,
         unsafe_allow_html=True,
@@ -1934,6 +1978,7 @@ def _render_cleaned_dataset(dataset_path: Path | None) -> None:
 
 def main() -> None:
     _init_state()
+    _reply_corner_logo()
     _masthead()
     view_upload()
     view_pipeline()
