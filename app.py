@@ -59,16 +59,21 @@ CUSTOM_CSS = """
 @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@300;400;500;600&display=swap');
 
 :root {
-    --paper: #f5f1ea;
-    --paper-deep: #ebe4d6;
+    --paper: #f3f8f4;
+    --paper-deep: #e2eee5;
     --ink: #1a1613;
     --ink-soft: #3a332d;
     --ink-muted: #8a7f72;
-    --accent: #b54420;
-    --accent-soft: #d97a4a;
-    --success: #5a7a3a;
+    --accent: #00a651;
+    --accent-deep: #007f3d;
+    --accent-soft: #35bb72;
+    --accent-tint: #d7f3e3;
+    --accent-mist: #effaf4;
+    --accent-rgb: 0, 166, 81;
+    --accent-soft-rgb: 53, 187, 114;
+    --success: #0f8f4a;
     --warning: #c4962b;
-    --rule: #c7bfb2;
+    --rule: #bfd5c6;
 }
 
 html, body, [class*="css"], .stApp {
@@ -79,8 +84,9 @@ html, body, [class*="css"], .stApp {
 
 .stApp {
     background-image:
-        radial-gradient(circle at 15% 5%, rgba(181, 68, 32, 0.04) 0%, transparent 40%),
-        radial-gradient(circle at 85% 95%, rgba(26, 22, 19, 0.03) 0%, transparent 40%);
+        radial-gradient(circle at 15% 5%, rgba(var(--accent-rgb), 0.10) 0%, transparent 42%),
+        radial-gradient(circle at 85% 95%, rgba(var(--accent-soft-rgb), 0.08) 0%, transparent 38%),
+        linear-gradient(180deg, #f7fcf8 0%, var(--paper) 48%, #edf6f0 100%);
     background-attachment: fixed;
 }
 
@@ -265,9 +271,9 @@ h1 { font-weight: 400 !important; }
     margin-bottom: 0.3rem;
 }
 .stage .name { color: var(--ink); font-weight: 500; }
-.stage.done { background: var(--paper-deep); }
+.stage.done { background: var(--accent-tint); }
 .stage.done .name::before { content: "● "; color: var(--success); }
-.stage.active { background: #fff; }
+.stage.active { background: var(--accent-mist); }
 .stage.active .name::before {
     content: "◐ ";
     color: var(--accent);
@@ -295,9 +301,15 @@ h1 { font-weight: 400 !important; }
     transition: all 0.2s ease !important;
 }
 .stButton > button:hover {
-    background: var(--ink) !important;
-    color: var(--paper) !important;
+    background: var(--accent-mist) !important;
+    color: var(--accent-deep) !important;
+    border-color: var(--accent) !important;
     transform: translateY(-1px) !important;
+}
+.stButton > button:focus-visible {
+    outline: none !important;
+    border-color: var(--accent) !important;
+    box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.18) !important;
 }
 /* Primary variant — the Run pipeline call-to-action */
 .stButton > button[kind="primary"],
@@ -305,14 +317,14 @@ h1 { font-weight: 400 !important; }
     background: var(--accent) !important;
     color: var(--paper) !important;
     border: 1px solid var(--accent) !important;
-    box-shadow: 4px 4px 0 rgba(26, 22, 19, 0.12) !important;
+    box-shadow: 4px 4px 0 rgba(var(--accent-rgb), 0.18) !important;
 }
 .stButton > button[kind="primary"]:hover,
 .stButton > button[data-testid="baseButton-primary"]:hover {
-    background: var(--ink) !important;
+    background: var(--accent-deep) !important;
     color: var(--paper) !important;
-    border-color: var(--ink) !important;
-    box-shadow: 4px 4px 0 rgba(181, 68, 32, 0.22) !important;
+    border-color: var(--accent-deep) !important;
+    box-shadow: 4px 4px 0 rgba(var(--accent-soft-rgb), 0.24) !important;
 }
 .stButton > button:disabled,
 .stButton > button[kind="primary"]:disabled,
@@ -337,8 +349,14 @@ h1 { font-weight: 400 !important; }
     padding: 0.7rem 1.6rem !important;
 }
 .stDownloadButton > button:hover {
-    background: var(--ink) !important;
+    background: var(--accent) !important;
+    border-color: var(--accent) !important;
     color: var(--paper) !important;
+}
+.stDownloadButton > button:focus-visible {
+    outline: none !important;
+    border-color: var(--accent) !important;
+    box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.18) !important;
 }
 
 /* File uploader dropzone */
@@ -350,7 +368,7 @@ h1 { font-weight: 400 !important; }
 }
 [data-testid="stFileUploaderDropzone"]:hover {
     border-color: var(--accent) !important;
-    background: #fff !important;
+    background: var(--accent-mist) !important;
 }
 /* "Browse files" button — override both normal & nested text */
 [data-testid="stFileUploaderDropzone"] button {
@@ -373,7 +391,7 @@ h1 { font-weight: 400 !important; }
     background: transparent !important;
 }
 [data-testid="stFileUploaderDropzone"] button:hover {
-    background: var(--ink) !important;
+    background: var(--accent-deep) !important;
 }
 /* File size hint text ("200MB per file · CSV") */
 [data-testid="stFileUploaderDropzoneInstructions"],
@@ -393,10 +411,24 @@ h1 { font-weight: 400 !important; }
     border: 1px solid var(--rule) !important;
     font-family: 'IBM Plex Mono', monospace !important;
     color: var(--ink) !important;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease !important;
 }
 .stSelectbox [data-baseweb="select"] > div {
     background: #fff !important;
     color: var(--ink) !important;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease !important;
+}
+.stSelectbox [data-baseweb="select"] > div:hover,
+.stTextInput > div > div > input:hover {
+    border-color: var(--accent-soft) !important;
+    background: var(--accent-mist) !important;
+}
+.stSelectbox [data-baseweb="select"] > div:focus-within,
+.stTextInput > div > div > input:focus {
+    border-color: var(--accent) !important;
+    box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.16) !important;
+    background: #fff !important;
+    outline: none !important;
 }
 .stSelectbox [data-baseweb="select"] [class*="ValueContainer"],
 .stSelectbox [data-baseweb="select"] div[role="button"],
@@ -435,8 +467,8 @@ h1 { font-weight: 400 !important; }
 }
 [data-baseweb="popover"] [role="option"]:hover,
 [data-baseweb="popover"] [aria-selected="true"] {
-    background: var(--paper-deep) !important;
-    color: var(--accent) !important;
+    background: var(--accent-tint) !important;
+    color: var(--accent-deep) !important;
 }
 
 /* Tables */
@@ -639,7 +671,7 @@ details[data-testid="stStatus"] > div,
 .pipeline-progress .track {
     width: 100%;
     height: 10px;
-    background: #e8dfcb;
+    background: var(--accent-tint);
     border-radius: 0;
     overflow: hidden;
     border: 1px solid var(--rule);
@@ -647,7 +679,7 @@ details[data-testid="stStatus"] > div,
 }
 .pipeline-progress .fill {
     height: 100%;
-    background: linear-gradient(90deg, var(--success) 0%, #6b8a45 100%);
+    background: linear-gradient(90deg, var(--accent) 0%, var(--accent-soft) 100%);
     width: 0%;
     transition: width 0.45s cubic-bezier(0.4, 0, 0.2, 1);
     box-shadow: inset 0 -2px 0 rgba(0,0,0,0.08);
@@ -666,7 +698,7 @@ details[data-testid="stStatus"] > div,
     position: relative;
     border: 1px solid var(--accent);
     background: #fff;
-    box-shadow: 5px 5px 0 rgba(181, 68, 32, 0.10);
+    box-shadow: 5px 5px 0 rgba(var(--accent-rgb), 0.12);
     margin-bottom: 1.4rem;
     overflow: hidden;
 }
@@ -749,12 +781,12 @@ details[data-testid="stStatus"] > div,
     animation: live-dot 1.2s ease-in-out infinite;
 }
 @keyframes live-dot {
-    0%, 100% { opacity: 1; transform: scale(1); box-shadow: 0 0 0 0 rgba(181, 68, 32, 0.6); }
-    50%      { opacity: 0.5; transform: scale(1.2); box-shadow: 0 0 0 6px rgba(181, 68, 32, 0); }
+    0%, 100% { opacity: 1; transform: scale(1); box-shadow: 0 0 0 0 rgba(var(--accent-rgb), 0.45); }
+    50%      { opacity: 0.5; transform: scale(1.2); box-shadow: 0 0 0 6px rgba(var(--accent-rgb), 0); }
 }
 .run-log-entry.running .run-log-body {
     padding: 1.1rem 1.6rem 1.3rem 1.6rem;
-    background: linear-gradient(180deg, #fff 0%, #fdfaf3 100%);
+    background: linear-gradient(180deg, #fff 0%, var(--accent-mist) 100%);
 }
 .run-log-entry.running .run-log-line {
     font-family: 'Fraunces', serif;
@@ -935,6 +967,10 @@ details[data-testid="stStatus"] > div,
     color: var(--ink) !important;
     border-bottom: 2px solid var(--accent) !important;
     background: transparent !important;
+}
+[data-baseweb="tab"]:hover {
+    color: var(--accent-deep) !important;
+    background: var(--accent-mist) !important;
 }
 
 /* Narrative body */
@@ -1611,9 +1647,9 @@ def view_pipeline() -> None:
                 """<style>
                 .stButton > button[kind="primary"],
                 .stButton > button[data-testid="baseButton-primary"] {
-                    background: #e8896e !important;
+                    background: var(--accent-soft) !important;
                     color: #fff !important;
-                    border: 1px solid #d4715a !important;
+                    border: 1px solid var(--accent) !important;
                     box-shadow: none !important;
                     cursor: wait !important;
                 }
