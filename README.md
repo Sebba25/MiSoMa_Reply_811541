@@ -133,7 +133,7 @@ The same CLI interface also exposes `dtype`, `schema`, `completeness`, `consiste
 
 The **overall architecture** is based on a **strict separation** between inspection, diagnosis, remediation planning, transformation, and verification. This choice reflects the view that heterogeneous data-quality problems are handled more safely when the workflow is decomposed into narrower stages with explicit responsibilities.
 
-![High-level pipeline overview](images/flow_diagrams/PipelineOverview.gv.png)
+![High-level pipeline overview](images/flow_diagrams/01_pipeline_overview.gv.png)
 
 A **broad architectural overview** of the system is useful because it makes visible the **main split between the validation half and the cleaning half**, while still preserving the end-to-end flow from raw CSV input to cleaned dataset and narrative report.
 
@@ -143,7 +143,7 @@ This architecture serves **two purposes**. The first is **technical safety**. If
 
 Conceptually, the system can be read as a **four-layer architecture**. The **first layer** is the **contract layer**, in which Pydantic models define the typed artifacts exchanged across stages. The **second layer** is the **deterministic evidence-building layer**, in which local Python code measures parse rates, shapes, placeholders, duplicates, and anomalies without asking the model to rediscover raw facts. The **third layer** is the **agent layer**, where LLMs are used only for narrow interpretive or generative tasks that benefit from bounded reasoning. The **fourth layer** is the **host-side enforcement layer**, which remains the final authority whenever generated outputs must be validated before acceptance. 
 
-![Four-layer architecture and dataflow](images/flow_diagrams/FourLayerArchitecture.gv.png)
+![Four-layer architecture and dataflow](images/flow_diagrams/02_conceptual_architecture.gv.png)
 
 This decomposition is important because it explains why the pipeline remains both flexible and auditable: interpretation is delegated selectively, while structure, evidence, and final acceptance stay under explicit programmatic control.
 
@@ -214,7 +214,7 @@ This is a deliberate **compromise between interpretability and cost efficiency**
 
 The same `dtype-inference` call **returns** not only the **target cleaned pandas dtype**, but also the **semantic role of the column and a dominant canonical pattern** when that pattern is clear enough. In other words, the dominant pattern is not deferred to a second dtype-inference call. It is **already part of the schema-stage inference**. In parallel, **deterministic naming checks identify unsafe column names** and **duplicate-semantic groups**. The **result** is merged into a structured `SchemaHandoff`.
 
-![Schema stage internals: profiling, dtype-inference agent, naming checks, and merge](images/flow_diagrams/SchemaStageInternals.gv.png)
+![Schema stage internals: profiling, dtype-inference agent, naming checks, and merge](images/flow_diagrams/03_schema_stage_internals.gv.png)
 
 This **hybrid design is deliberate**. **Parse rates and naming rules** are **straightforward deterministic checks**. Interpreting a messy profile as a cleaned target dtype benefits from semantic reasoning, but only when that reasoning is grounded in bounded evidence rather than raw unrestricted data.
 
@@ -224,7 +224,7 @@ Completeness analysis exists because missingness in real datasets is often **dis
 
 Starting from this placeholder list, `src/tools/completeness_tools.py` **builds a deterministic completeness profile**. It computes completeness percentages, detects missing-like tokens, records representative placeholder examples, and marks sparse columns. More specifically, the completeness logic constructs a **missing-like mask** that merges true nulls, empty strings, and configured placeholder values into one unified notion of absence. 
 
-![Completeness detection: how true nulls, empty strings, and placeholder tokens are merged into the missing-like mask](images/flow_diagrams/CompletenessDetectionFlow.gv.png)
+![Completeness detection: how true nulls, empty strings, and placeholder tokens are merged into the missing-like mask](images/flow_diagrams/04_completeness_detection_flow.gv.png)
 
 This profile is then **interpreted** by the `completeness-analysis` agent, which **returns** a **structured report with per-column recommendations**.
 
@@ -256,54 +256,60 @@ The **first important point** is that the **consistency stage does not start fro
 
 This **structural profile** is built by **rendering non-null, non-empty values as strings** and **abstracting them through a shape function**. The shape function replaces every digit with a representative digit placeholder and every letter with a letter placeholder, collapsing consecutive identical placeholders, so that the surface structure of a value is captured without retaining its actual content. In practice, a value such as `202402` becomes the six-digit shape `999999`, a value such as `04/2024` becomes the shape `99/9999`, and a value such as `2025-06-18T16:15:20.148346` becomes a timestamp shape. The profiler **counts how often each shape appears**, **ranks the shapes by frequency**, and defines the **`dominant_shape`** as the most frequent one among the filtered values. Its relative prevalence is stored as **`dominant_shape_pct`**. Both fields appear in the `ColumnFormatFacts` object that is serialized and passed to the agent on the slow path.
 
+![Format consistency validation: entry gate, schema-guided fast path, and agent-backed slow path](images/flow_diagrams/05_format_consistency_paths.gv.png)
+
 The **connection between `detected_pattern` in Section 2.4.2 and `dominant_shape` in this stage is precise but operates at different levels of abstraction**. The `detected_pattern` from the schema handoff is **semantic and canonical**: it expresses what the cleaned values should mean and what form they should take after normalization. It is produced by the LLM from a bounded profile and a column name. The `dominant_shape` from the consistency stage is **empirical and structural**: it is produced by a deterministic function that renders and abstracts the raw values as they actually appear in the dataset. The two fields therefore answer different questions. `detected_pattern` answers "what should this column look like?" while `dominant_shape` answers "what does this column look like right now, in the majority of rows?"
 
 In practice, the relationship between the two varies by column. For `rata` in `spesa.csv`, the `detected_pattern` is `YYYYMM period key` and the `dominant_shape` is `999999`, a six-digit numeric layout, which is exactly what a `YYYYMM` code produces. The alignment is almost direct. For `mese` in `attivazioniCessazioni.csv`, the `detected_pattern` is `month number (1-12)`, but the raw shapes split between `9` for single-digit months such as `7` and `99` for two-digit months such as `11`, with additional textual shapes for forms like `NOV` or `Novembre`. In this case the `detected_pattern` declares the target, while the `dominant_shape` and its distribution reveal the extent of the drift and which shape families should be treated as already valid versus inconsistent.
 
-This pairing also explains the **schema-driven gate bypass** described later in this section. When the `detected_pattern` from the schema handoff is already unambiguous, the consistency stage can use it directly as a validation contract without asking the LLM to rediscover the target from scratch. The `dominant_shape` is still computed and stored, because it informs the agent about what the majority of rows already look like and which examples must be preserved rather than transformed. But the semantic decision of what the column is supposed to represent has already been made in Section 2.4.2 and does not need to be repeated.
+This distinction also explains the **two execution paths** in `src/validation/consistency.py`. When the schema handoff already provides an **unambiguous `detected_pattern`**, the consistency stage can often take a **deterministic fast path** and use that pattern directly as its validation contract, especially for **numeric and code-like columns**. The `dominant_shape` is still computed because it shows what the majority of rows already look like and which examples must be preserved rather than transformed. If **no stable schema pattern exists**, or if the pattern is too ambiguous to serve as a direct contract, the stage **falls back to the slower agent-backed path**.
 
-This **distinction explains the two execution paths** in `src/validation/consistency.py`. If the **schema handoff already provides an unambiguous pattern**, the consistency stage can often take a **deterministic fast path**. This is especially important for **numeric and code-like columns**, where values can be **checked directly against the schema pattern** instead of asking an LLM to rediscover the target. For example, a column whose schema pattern is `month number (1-12)` can be validated against that rule even if valid raw outputs have different widths such as `7` and `11`. If **no stable schema pattern exists**, or if the pattern is too ambiguous to serve as a direct contract, the stage **falls back to the slower agent-backed path**.
-
-Before either path is taken, the consistency stage applies **two complementary improvements** that extend its coverage beyond what the shape-based heuristic alone can detect.
-
-The **first** is a **schema-driven gate bypass** for numeric dtype columns. The shape-based `machine_format_candidate` flag is computed from column-name keywords, so columns whose names fall outside the recognized vocabulary - such as `revenue`, `expenses`, or `discount_rate` - would otherwise be silently skipped regardless of how many inconsistent values they contain. When the schema handoff provides a concrete, unambiguous `detected_pattern` for an `Int64` or `Float64` column, the stage bypasses the heuristic gate entirely and proceeds directly to schema-guided numeric validation. The schema's `detected_pattern` is already a direct answer to whether machine-enforceable normalization is possible, making the name-based heuristic redundant in those cases.
-
-The **second** is a **`numeric_parse_pct` fallback threshold** for temporal and identifier columns. A column such as `month` with values `1` through `12` produces two distinct structural shapes: shape `9` for single-digit months and shape `99` for two-digit months. If neither shape individually reaches the 70 percent dominance threshold, the column would be excluded even though it is clearly a numeric temporal field. The fix adds `numeric_parse_pct >= 85` as a secondary gate condition for these semantic categories. When a column is overwhelmingly numeric by parse rate, it is treated as a machine-format candidate regardless of how its numeric values distribute across different digit-widths. Critically, this change only affects the entry gate, not the validation target: the dominant shape remains unchanged, so zero-padded forms such as `03` are still treated as inconsistent against a dominant `9`.
+Before either path is taken, the stage applies **two gate improvements** that extend coverage beyond the shape-based heuristic alone. The **first** is a **schema-driven bypass** for numeric dtype columns: when an `Int64` or `Float64` column already has a concrete `detected_pattern`, the stage can skip the name-based `machine_format_candidate` heuristic and proceed directly to schema-guided validation, even for columns whose names fall outside the recognized keyword vocabulary. The **second** is a **`numeric_parse_pct` fallback threshold** for temporal and identifier columns. A column such as `month`, whose valid values split across shapes like `9` and `99`, may fail the dominant-shape threshold despite being clearly machine-readable. Adding `numeric_parse_pct >= 85` as a secondary gate lets such columns enter validation without changing the target itself, so zero-padded values such as `03` can still be treated as inconsistent against a dominant `9`.
 
 In that **slower path**, the **format-consistency agent still does not receive the whole raw column**. Instead, it receives a **compact `ColumnFormatFacts` object** serialized as a plain-text JSON attachment. That attached artifact contains the target dtype hint, parse percentages, empty-like percentage, semantic hint, dominant shape, dominant-shape percentage, representative dominant values, grouped inconsistent examples, and a compact summary of the most frequent raw value shapes. The **prompt that accompanies the attachment** is also **explicit**: it tells the agent the dataset name, the column name, the total row count, the dominant shape, the percentage of rows matching that dominant shape, the number of inconsistent rows, and, when available, the schema-stage target dtype and semantic role.
 
-The **amount of evidence passed to the agent is deliberately bounded**. The **dominant examples** are **capped at five concrete values**, because their **role is to illustrate what already-valid values look like** rather than to restate the full column. The **outlier families** are selected through `select_outlier_examples(...)`, which groups inconsistent values by shape, ranks those shape families by frequency, and then keeps at most ten shapes, at most ten representative concrete values per shape, and at most sixty outlier examples overall. Each **outlier value** is also **trimmed to keep the prompt readable**. In parallel, **the lower-level structural profile stores up to five top value shapes, each summarized with at most three example values**, and this **top-shape profile** is itself computed from a **bounded sample** of the **first 250 rendered values** rather than from an unbounded pass of the entire prompt payload.
+```json
+{
+  "column_name": "RATA",
+  "pandas_dtype": "object",
+  "total_rows": 7543,
+  "non_null_rows": 7543,
+  "distinct_non_null_values": 66,
+  "numeric_parse_pct": 100.0,
+  "datetime_parse_pct": 0.0,
+  "empty_like_pct": 0.0,
+  "semantic_hint": "temporal_period",
+  "machine_format_candidate": true,
+  "dominant_shape": "999999",
+  "dominant_shape_pct": 89.4,
+  "dominant_example_values": [
+    "202311",
+    "202307",
+    "202308"
+  ],
+  "inconsistent_rows": 802,
+  "inconsistent_examples": [
+    { "value": "2023-09", "shape": "9999-99", "count": 143 },
+    { "value": "DIC-2023", "shape": "AAA-9999", "count": 88 },
+    { "value": "09/2024", "shape": "99/9999", "count": 67 }
+  ],
+  "top_value_shapes": [
+    { "shape": "999999", "count": 224, "pct": 89.6, "sample_values": ["202311", "202307", "202308"] },
+    { "shape": "9999-99", "count": 11, "pct": 4.4, "sample_values": ["2023-09", "2024-04"] },
+    { "shape": "99/9999", "count": 8, "pct": 3.2, "sample_values": ["09/2024", "12/2023"] }
+  ]
+}
+```
 
-The **logic behind these limits** is the **same design principle used earlier in schema inference**: the agent should receive enough evidence to understand the main structure of the column without paying the cost of seeing every raw row. The **five dominant examples** show the already-valid family that should be preserved. The **grouped outlier examples** show the main inconsistency families that may need normalization. The **top-shape summary** gives a **compact distributional view** of the column. Together, these components let the agent reason over the problem as a structured profile rather than as a long flat list of values. This keeps the call **more cost-efficient**, makes the evidence **easier to interpret**, and **biases the agent toward reasoning about recurring patterns rather than overfitting to isolated anomalies**.
+This kind of artifact is important because it shows the exact balance the slow path relies on: **global column signals** such as parse rates and dominant-shape prevalence, together with **grouped concrete outliers** that reveal the main inconsistency families.
 
-The **slow path** is therefore **not an unconstrained semantic guess**. It is a **bounded decision over a pre-structured evidence bundle**. The agent examines whether the dominant family is coherent enough, whether the outlier families are substantial enough, and whether the column is a true machine-format candidate. Only then does it decide whether the observed variation should be treated as a **genuine actionable inconsistency**.
+The amount of evidence passed to the agent is deliberately bounded. Dominant examples are capped at five values, outlier families are grouped and trimmed through `select_outlier_examples(...)`, and the top-shape profile is summarized from a bounded sample rather than from the full rendered column. The goal is the same as in schema inference: give the agent enough evidence to understand the main structure of the column without sending every raw row. The **slow path** is therefore **not an unconstrained semantic guess**, but a bounded decision over a pre-structured evidence bundle about whether the observed variation is a **genuine actionable inconsistency**.
 
 This **selectivity is essential**. **Not every variation should trigger cleaning**. Free-text fields, notes, names, or descriptive categorical columns may contain diverse content without containing any format error. The stage therefore emits a `FormatConsistencyFinding` only when a **clear canonical representation exists** and a **measurable inconsistent minority can reasonably be normalized toward it**. This is the **core trigger for later cleaner generation**.
 
-![Format consistency validation: entry gate, schema-guided fast path, and agent-backed slow path](images/flow_diagrams/FormatConsistencyPaths.gv.png)
-
-``` json
-    {
-      "column_name": "RATA",
-      "expected_pattern": "YYYYMM period key (with some month-name formats)",
-      "inconsistent_rows": 802,
-      "example_inconsistent_values": [
-        "09/2024",
-        "2023-09",
-        "2024-04",
-        "DIC-2023",
-        "SET-2023",
-        "12/2023",
-      ],
-      "evidence": "Schema handoff identified target dtype 'Int64' and pattern 'YYYYMM period key (with some month-name formats)'. Schema-guided validation found 802 rows that do not match the target numeric representation.",
-      "suggested_strategy": "Target format: 'YYYYMM period key (with some month-name formats)'. Dominant valid shape: '999999' - values matching this shape are already valid, preserve them. \nExamples of already-valid values (the OUTPUT must look exactly like these): '202311', '202307', '202308', '202304', '202306'.\n\nHandle every outlier shape group below by inferring the transformation from the examples. For each group, verify your transformation produces output that matches the already-valid examples above - same length, same character structure, same field order (e.g. YYYY before MM, not MM before YYYY). Use partial matches, prefix stripping, abbreviation expansion, or abbreviation mapping as needed. Map to null ONLY when a value is completely unrecognisable - never null a value that contains recoverable information:\n\n  shape '9999-99': e.g. '2023-09', '2023-12', '2024-02', '2023-04', '2024-04'\n  shape 'AAA-9999': e.g. 'DIC-2023', 'SET-2023', 'OTT-2023', 'SET-2024', 'DIC-2024'\n  shape '99/9999': e.g. '09/2024', '12/2023', '03/2024', '04/2023', '12/2024'\n\nEVERY value in example_inconsistent_values must be explicitly handled - do not leave any outlier value unchanged unless it already matches the target format. Prefer a best-effort conversion over null whenever the value contains recoverable information."
-    }
-```
-
-
 #### 2.4.5 Anomaly Detection
 
-**Anomaly detection** is **separated from format normalization** because **suspicious values are not automatically incorrect values**. A large outlier, a rare category, or an unusual code may indicate corruption, but it may also represent a **valid edge case**. **Automatic rewriting** in such cases would be **risky**.
+**Anomaly detection** is separated from format normalization because **suspicious values are not automatically incorrect values**. A large outlier, a rare category, or an unusual code may indicate corruption, but it may also represent a **valid edge case**. **Automatic rewriting** in such cases would be **risky**.
 
 The system **detects anomaly candidates deterministically** in `src/tools/quality_tools.py`. **Numeric outliers, suspicious negative values in mostly non-negative measures, and rare categorical values are not found by prompting an LLM**, but by **running explicit local rules** over the schema-aware dataset representation. The `anomaly-summary` agent is used only afterward to **write a concise structured summary of findings that have already been computed**.
 
@@ -391,13 +397,13 @@ The **duplicate stage** follows the same philosophy at row level. **Exact duplic
 
 After schema, completeness, consistency, anomaly, cross-column, and duplicate analyses have been completed, the **outputs are bundled into a unified validation artifact**. This bundling is necessary because the cleaning half of the pipeline should consume one coherent view of the dataset rather than several loosely connected reports.
 
-![Ordered validation flow ending in the validation bundle](images/flow_diagrams/ValidationStagePipeline.gv.png)
+![Ordered validation flow ending in the validation bundle](images/flow_diagrams/06_validation_stage_pipeline.gv.png)
 
 The diagram above is best read as an **ordered orchestration view** of the validation half. It correctly shows that the **schema stage comes first**, that it contains both deterministic profiling and dtype inference, and that the **validation bundle is assembled only after all six validation stages have been executed**.
 
-![Remediation planning: from findings to auto-apply and manual-review actions](images/flow_diagrams/RemediationPlanning.gv.png)
+![Remediation planning: from findings to auto-apply and manual-review actions](images/flow_diagrams/07_remediation_planning.gv.png)
 
-![Remediation policy decision tree: how each finding type maps to an action category](images/flow_diagrams/RemediationPolicyTree.gv.png)
+![Remediation policy decision tree: how each finding type maps to an action category](images/flow_diagrams/08_remediation_policy_tree.gv.png)
 
 The **remediation planner** in remediation.py converts the validation bundle into a **structured list of RemediationAction objects**. This is the stage where **diagnostic findings are translated into explicit allowed interventions**. Low-risk and mechanically justified findings, such as safe column renames, dtype casts, placeholder-to-null replacement, exact duplicate-column removal, or exact duplicate-row removal, become auto-applicable actions.
 
@@ -489,7 +495,7 @@ If a **generated cleaner fails host-side checks**, the `cleaner-repair-critic` a
 
 The implementation also contains a **stagnation mechanism**. This mechanism exists because **repeated failure was observed as a practical issue during development**. A retry loop can become trapped in variants of the same failing control flow. The stagnation detector watches for repeated code or repeated validation fingerprints. When the loop stalls, the prompt **injects a structural unblock brief** and **raises the temperature conservatively from the default deterministic setting into the `0.2` to `0.5` range**. This strategy is documented in the codebase and in the planning notes, but it should be described as the implemented strategy rather than as a benchmark-proven optimum.
 
-![Generation, validation, critic, and stagnation loop](images/flow_diagrams/CleanerGenerationLoop.gv.png)
+![Generation, validation, critic, and stagnation loop](images/flow_diagrams/09_cleaner_generation_loop.gv.png)
 
 This figure belongs here because it captures the **most delicate control loop of the cleaning half**: bounded self-testing, host-side acceptance checks, critic-guided repair, and stagnation handling. In particular, it makes clear that **code generation is not a single-shot step**, but a controlled loop whose output is accepted only after external validation.
 
@@ -497,11 +503,11 @@ This figure belongs here because it captures the **most delicate control loop of
 
 Once the **remediation plan** and the **accepted cleaners** are available, the **application stage executes the actions in a specific order**. **Generated cleaners are applied first** while the original column identities are still intact. Placeholder-to-null actions, exact duplicate-column drops, renames, and dtype casts follow in sequence. This ordering is important because an **early rename or cast could interfere with later steps** that still rely on the original structural assumptions.
 
-![Cleaning half pipeline: action router, generation path, application ordering, and verification](images/flow_diagrams/CleaningHalfPipeline.gv.png)
+![Cleaning half pipeline: action router, generation path, application ordering, and verification](images/flow_diagrams/10_cleaning_half_pipeline.gv.png)
 
 **Application alone**, however, **is not treated as success**. After the cleaned CSV is produced, the **verification stage** in `src/cleaning/verification.py` **re-runs consistency analysis and compares the new findings against the original ones**. The result is a **structured assessment** of whether each targeted issue was resolved, improved, left unchanged, or regressed. **Verification** is one of the **strongest safeguards** in the system because it **prevents the system from equating successful code generation with successful data-quality improvement**.
 
-![Post-cleaning verification: re-read, reshape, diff engine, and outcome classification](images/flow_diagrams/PostCleaningVerification.gv.png)
+![Post-cleaning verification: re-read, reshape, diff engine, and outcome classification](images/flow_diagrams/11_post_cleaning_verification.gv.png)
 
 #### 2.4.11 Final Reporting
 

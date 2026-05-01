@@ -58,7 +58,7 @@ def _render(dot: graphviz.Digraph, output_dir: str) -> None:
 # ---------------------------------------------------------------------------
 
 def create_dataflow_diagram(output_dir: str = OUTPUT_DIR) -> None:
-    dot = _base_graph("0_pipeline_overview", "Main pipeline overview", rankdir="TB",
+    dot = _base_graph("01_pipeline_overview", "Main pipeline overview", rankdir="TB",
                       ranksep="1.1", nodesep="0.7", concentrate="false")
 
     # --- Input ---
@@ -133,7 +133,7 @@ def create_dataflow_diagram(output_dir: str = OUTPUT_DIR) -> None:
 # ---------------------------------------------------------------------------
 
 def create_validation_flow_detail(output_dir: str = OUTPUT_DIR) -> None:
-    dot = _base_graph("ValidationStagePipeline", "Validation pipeline detail", rankdir="TB")
+    dot = _base_graph("06_validation_stage_pipeline", "Validation pipeline detail", rankdir="TB")
 
     dot.node("df",  "Raw DataFrame",    fillcolor=COLORS["source"])
     dot.node("sch", "Schema handoff\n(SchemaHandoff)",           fillcolor=COLORS["artifact"])
@@ -147,7 +147,8 @@ def create_validation_flow_detail(output_dir: str = OUTPUT_DIR) -> None:
 
     # Schema has an internal dtype-inference sub-step
     with dot.subgraph(name="cluster_schema") as s:
-        s.attr(label="Schema stage", style="rounded,dashed", color="#555555", fontname=FONT, fontsize="10")
+        s.attr(label="Schema stage", style="rounded,filled", fillcolor=COLORS["cluster_v"],
+               color="#22A30A", penwidth="1.5", fontname=FONT, fontsize="10", fontcolor="#22A30A")
         s.node("prof",  "Deterministic\nprofiling",     fillcolor=COLORS["action"])
         s.node("dtype", "dtype-inference\nagent",       fillcolor=COLORS["agent"])
         s.node("name",  "Naming &\nduplication checks", fillcolor=COLORS["action"])
@@ -172,7 +173,7 @@ def create_validation_flow_detail(output_dir: str = OUTPUT_DIR) -> None:
 # ---------------------------------------------------------------------------
 
 def create_cleaning_flow_detail(output_dir: str = OUTPUT_DIR) -> None:
-    dot = _base_graph("CleaningHalfPipeline", "Cleaning pipeline detail", rankdir="TB", ranksep="0.9")
+    dot = _base_graph("10_cleaning_half_pipeline", "Cleaning pipeline detail", rankdir="TB", ranksep="0.9")
 
     dot.node("bundle",  "Validation bundle\n(OrchestrationStepResult)",    fillcolor=COLORS["artifact"])
     dot.node("plan",    "RemediationPlan\n(RemediationAction[])",           fillcolor=COLORS["artifact"])
@@ -217,7 +218,8 @@ def create_cleaning_flow_detail(output_dir: str = OUTPUT_DIR) -> None:
     dot.edge("auto",     "app_label", label="steps 2–5:\nstructural actions")
 
     with dot.subgraph(name="cluster_order") as o:
-        o.attr(label="Application order", style="rounded,dashed", color="#555555", fontname=FONT, fontsize="10")
+        o.attr(label="Application order", style="rounded,filled", fillcolor=COLORS["cluster_c"],
+               color="#1A8A00", penwidth="1.5", fontname=FONT, fontsize="10", fontcolor="#1A8A00")
         o.node("s1", "1. Generated cleaners\n(column identities still intact)", fillcolor=COLORS["action"])
         o.node("s2", "2. Placeholder → null",                                    fillcolor=COLORS["action"])
         o.node("s3", "3. Drop exact duplicate columns",                          fillcolor=COLORS["action"])
@@ -249,7 +251,7 @@ def create_cleaning_flow_detail(output_dir: str = OUTPUT_DIR) -> None:
 # ---------------------------------------------------------------------------
 
 def create_generation_validation_cycle(output_dir: str = OUTPUT_DIR) -> None:
-    dot = _base_graph("CleanerGenerationLoop", "Code generation cycle", rankdir="TB", ranksep="0.85")
+    dot = _base_graph("09_cleaner_generation_loop", "Code generation cycle", rankdir="TB", ranksep="0.85")
 
     dot.node("req",  "ColumnCleaningRequest\n(target dtype, valid examples,\ninconsistent examples)", fillcolor=COLORS["artifact"])
     dot.node("gen",  "Generator agent\n(writes Python cleaner fn)", fillcolor=COLORS["agent"])
@@ -267,10 +269,10 @@ def create_generation_validation_cycle(output_dir: str = OUTPUT_DIR) -> None:
     ])
 
     # Failure loop
-    dot.edge("hval", "crit", label="checks failed", color="#cc3300", fontcolor="#cc3300")
-    dot.edge("crit", "stag", color="#cc3300")
-    dot.edge("stag", "gen",  label="retry with repair prompt\n(max attempts)", color="#cc3300",
-             fontcolor="#cc3300", style="dashed", constraint="false")
+    dot.edge("hval", "crit", label="checks failed", style="dashed", color="#888888", fontcolor="#888888")
+    dot.edge("crit", "stag", style="dashed", color="#888888")
+    dot.edge("stag", "gen",  label="retry with repair prompt\n(max attempts)",
+             style="dashed", color="#888888", fontcolor="#888888", constraint="false")
 
     _render(dot, output_dir)
 
@@ -280,7 +282,7 @@ def create_generation_validation_cycle(output_dir: str = OUTPUT_DIR) -> None:
 # ---------------------------------------------------------------------------
 
 def create_schema_validation_detail(output_dir: str = OUTPUT_DIR) -> None:
-    dot = _base_graph("SchemaStageInternals", "Schema validation internals", rankdir="TB", ranksep="0.85")
+    dot = _base_graph("03_schema_stage_internals", "Schema validation internals", rankdir="TB", ranksep="0.85")
 
     dot.node("df",      "Raw DataFrame",                         fillcolor=COLORS["source"])
     dot.node("prof",    "Deterministic profiler\n(schema_tools.py)\n\nnon-null count · distinct count\nnumeric parse % · datetime parse %\nrandom sample (≤5%, ≤500 values)",
@@ -322,7 +324,7 @@ def create_schema_validation_detail(output_dir: str = OUTPUT_DIR) -> None:
 # ---------------------------------------------------------------------------
 
 def create_consistency_detail(output_dir: str = OUTPUT_DIR) -> None:
-    dot = _base_graph("FormatConsistencyPaths", "Format consistency fast vs slow path", rankdir="TB", ranksep="0.9")
+    dot = _base_graph("05_format_consistency_paths", "Format consistency fast vs slow path", rankdir="TB", ranksep="0.9")
 
     dot.node("sh",      "SchemaHandoff\n(detected_pattern, pandas_dtype)",  fillcolor=COLORS["artifact"])
     dot.node("df",      "Raw DataFrame column",                              fillcolor=COLORS["source"])
@@ -361,7 +363,7 @@ def create_consistency_detail(output_dir: str = OUTPUT_DIR) -> None:
 # ---------------------------------------------------------------------------
 
 def create_remediation_detail(output_dir: str = OUTPUT_DIR) -> None:
-    dot = _base_graph("RemediationPlanning", "Remediation planning", rankdir="TB", ranksep="0.85")
+    dot = _base_graph("07_remediation_planning", "Remediation planning", rankdir="TB", ranksep="0.85")
 
     dot.node("bundle", "Validation bundle\n(OrchestrationStepResult)", fillcolor=COLORS["artifact"])
 
@@ -409,7 +411,7 @@ def create_remediation_detail(output_dir: str = OUTPUT_DIR) -> None:
 # ---------------------------------------------------------------------------
 
 def create_verification_detail(output_dir: str = OUTPUT_DIR) -> None:
-    dot = _base_graph("PostCleaningVerification", "Post-cleaning verification", rankdir="TB", ranksep="0.9")
+    dot = _base_graph("11_post_cleaning_verification", "Post-cleaning verification", rankdir="TB", ranksep="0.9")
 
     dot.node("orig_csv",  "Original CSV",          fillcolor=COLORS["source"], shape="folder")
     dot.node("clean_csv", "Cleaned CSV",            fillcolor=COLORS["output"], shape="folder")
@@ -427,10 +429,10 @@ def create_verification_detail(output_dir: str = OUTPUT_DIR) -> None:
     # Outcome nodes (same rank)
     with dot.subgraph() as s:
         s.attr(rank="same")
-        s.node("resolved",   "resolved\n(issue gone)",              fillcolor="#22A30A", fontcolor="white")
-        s.node("improved",   "improved\n(inconsistencies reduced)", fillcolor="#5DC73A")
+        s.node("resolved",   "resolved\n(issue gone)",              fillcolor=COLORS["agent"])
+        s.node("improved",   "improved\n(inconsistencies reduced)", fillcolor=COLORS["action"])
         s.node("unchanged",  "unchanged\n(no effect)",              fillcolor=COLORS["artifact"])
-        s.node("regressed",  "regressed\n(new issues introduced)",  fillcolor="#d62828", fontcolor="white")
+        s.node("regressed",  "regressed\n(new issues introduced)",  fillcolor=COLORS["artifact"])
 
     dot.node("verif_out", "VerificationReport\n\nper-column outcome + evidence\noverall assessment",
              fillcolor=COLORS["artifact"], style="rounded,filled,bold")
@@ -454,7 +456,7 @@ def create_verification_detail(output_dir: str = OUTPUT_DIR) -> None:
 # ---------------------------------------------------------------------------
 
 def create_completeness_flow(output_dir: str = OUTPUT_DIR) -> None:
-    dot = _base_graph("CompletenessDetectionFlow", "Completeness detection: building the missing-like mask",
+    dot = _base_graph("04_completeness_detection_flow", "Completeness detection: building the missing-like mask",
                       rankdir="TB", ranksep="0.85")
 
     dot.node("df",    "Raw DataFrame column",              fillcolor=COLORS["source"])
@@ -485,7 +487,7 @@ def create_completeness_flow(output_dir: str = OUTPUT_DIR) -> None:
     dot.edge("empty", "mask")
     dot.edge("phld",  "mask")
     dot.edge("mask",  "prof")
-    dot.edge("prof",  "agent", label="bounded profile\n(counts, examples)")
+    dot.edge("prof",  "agent")
     dot.edge("agent", "out")
 
     _render(dot, output_dir)
@@ -496,7 +498,7 @@ def create_completeness_flow(output_dir: str = OUTPUT_DIR) -> None:
 # ---------------------------------------------------------------------------
 
 def create_remediation_policy_tree(output_dir: str = OUTPUT_DIR) -> None:
-    dot = _base_graph("RemediationPolicyTree", "Remediation policy: finding to action category",
+    dot = _base_graph("08_remediation_policy_tree", "Remediation policy: finding to action category",
                       rankdir="TB", ranksep="0.9")
 
     dot.node("finding", "Validation finding\n(any stage)",             fillcolor=COLORS["artifact"])
@@ -554,7 +556,7 @@ def create_remediation_policy_tree(output_dir: str = OUTPUT_DIR) -> None:
 # ---------------------------------------------------------------------------
 
 def create_four_layer_architecture(output_dir: str = OUTPUT_DIR) -> None:
-    dot = _base_graph("1_conceptual_architecture", "Four-layer conceptual architecture",
+    dot = _base_graph("02_conceptual_architecture", "Four-layer conceptual architecture",
                       rankdir="TB", ranksep="1.0", nodesep="0.65", concentrate="false")
 
     # ── Layer 1 — Contract ──────────────────────────────────────────────────
