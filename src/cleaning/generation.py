@@ -887,7 +887,7 @@ def _run_cleaner_generation_locked(
         failed_columns.extend(parallel_failed_columns)
 
         # Loop through successful results, sorted back into original column order
-        for _idx, generated_column_name, program in sorted(completed_results, key=lambda item: item[0]):
+        for _, generated_column_name, program in sorted(completed_results, key=lambda item: item[0]):
             #Save the generated cleaner code to disk
             code_path = save_generated_cleaner(path, program)
             #Log where it was saved

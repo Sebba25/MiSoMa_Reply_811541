@@ -143,16 +143,16 @@ def detect_rare_category_candidates(df: pd.DataFrame, schema_columns: list[Any])
     findings: list[dict[str, Any]] = []
     for column in schema_columns:
         # Free text, names, and identifiers are expected to have many unique values and should not trigger this rule.
-        if column.pandas_dtype not in {"string", "object"}:
-            continue
-        if column.string_role in {"free_text", "name", "identifier"}:
+        if column.pandas_dtype not in {"string", "object"} or column.string_role in {"free_text", "name", "identifier"}:
             continue
 
+        # Keep only non-null strings
         rendered = df[column.name].dropna().astype(str).str.strip()
         rendered = rendered[rendered != ""]
         if rendered.empty:
             continue
 
+        # Lowercase
         normalized = rendered.str.lower()
         rendered = rendered[~normalized.isin(PLACEHOLDER_TOKENS)]
         if rendered.empty:

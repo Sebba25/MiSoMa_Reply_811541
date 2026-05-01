@@ -428,7 +428,7 @@ def plot_results_summary_table(quality: pd.DataFrame, report: dict, manifest: li
     table.set_fontsize(10)
     table.scale(1, 1.45)
 
-    for (row, col), cell in table.get_celld().items():
+    for (row, _), cell in table.get_celld().items():
         if row == 0:
             cell.set_text_props(weight="bold", color="white")
             cell.set_facecolor(PALETTE["near_black"])
