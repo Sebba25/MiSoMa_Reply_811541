@@ -183,49 +183,25 @@ def create_validation_flow_detail(output_dir: str = OUTPUT_DIR) -> None:
 # ---------------------------------------------------------------------------
 
 def create_cleaning_flow_detail(output_dir: str = OUTPUT_DIR) -> None:
-    dot = _base_graph("09_cleaning_half_pipeline", "Cleaning pipeline detail", rankdir="TB", ranksep="0.9")
+    dot = _base_graph("09_cleaning_half_pipeline", "Application & verification detail",
+                      rankdir="TB", ranksep="0.9", nodesep="0.7")
 
-    dot.node("bundle",  "Validation bundle\n(OrchestrationStepResult)",    fillcolor=COLORS["artifact"])
-    dot.node("plan",    "RemediationPlan\n(RemediationAction[])",           fillcolor=COLORS["artifact"])
-    dot.edge("bundle",  "plan")
-
-    # Split auto-apply vs manual
-    dot.node("split",   "Action router",                                    fillcolor=COLORS["action"], shape="diamond")
-    dot.edge("plan",    "split")
-
-    dot.node("manual",  "manual_review / report_only\n(no code generated,\nforwarded to report)",
-             fillcolor=COLORS["artifact"])
-    dot.node("auto",    "auto_apply actions\n(cast · rename · placeholder→null\n· exact duplicate drop)",
-             fillcolor=COLORS["artifact"])
-    dot.node("consist", "format_fix actions\n(FormatConsistencyFinding\nper column)",
+    # Inputs to application
+    dot.node("cleaners", "Accepted cleaners\n(ColumnCleanerProgram[])", fillcolor=COLORS["artifact"])
+    dot.node("auto",     "auto_apply actions\n(cast · rename · placeholder→null\n· exact duplicate drop)",
              fillcolor=COLORS["artifact"])
 
     with dot.subgraph() as s:
         s.attr(rank="same")
-        for n in ["manual", "auto", "consist"]:
-            s.node(n)
+        s.node("cleaners")
+        s.node("auto")
 
-    dot.edge("split",  "manual",  label="ambiguous /\nhigh risk",  style="dashed", color="#888888", fontcolor="#888888")
-    dot.edge("split",  "auto",    label="low risk")
-    dot.edge("split",  "consist", label="format inconsistency\nfound")
-
-    # Consist path → generation loop
-    dot.node("req",     "ColumnCleaningRequest\n\ntarget dtype · valid examples\ninconsistent examples · strategy",
-             fillcolor=COLORS["artifact"])
-    dot.node("gen",     "Generator + critic loop\n(see GenerationValidationCycle)",
-             fillcolor=COLORS["agent"])
-    dot.node("cleaners","Accepted cleaners\n(ColumnCleanerProgram[])",      fillcolor=COLORS["artifact"])
-
-    dot.edge("consist", "req")
-    dot.edge("req",     "gen")
-    dot.edge("gen",     "cleaners")
-
-    # Application stage — ordered execution
-    dot.node("app_label", "Application\n(application.py)\n— ordered execution —",
+    # Application stage
+    dot.node("app", "Application\n(application.py)\n— ordered execution —",
              fillcolor=COLORS["action"], style="rounded,filled,bold")
 
-    dot.edge("cleaners", "app_label", label="step 1: apply\ngenerated cleaners")
-    dot.edge("auto",     "app_label", label="steps 2–5:\nstructural actions")
+    dot.edge("cleaners", "app")
+    dot.edge("auto",     "app")
 
     with dot.subgraph(name="cluster_order") as o:
         o.attr(label="Application order", style="rounded,filled", fillcolor=COLORS["cluster_c"],
@@ -235,22 +211,23 @@ def create_cleaning_flow_detail(output_dir: str = OUTPUT_DIR) -> None:
         o.node("s3", "3. Drop exact duplicate columns",                          fillcolor=COLORS["action"])
         o.node("s4", "4. Column renames",                                        fillcolor=COLORS["action"])
         o.node("s5", "5. dtype casts",                                           fillcolor=COLORS["action"])
-        o.edges([("s1","s2"),("s2","s3"),("s3","s4"),("s4","s5")])
+        with o.subgraph() as r1:
+            r1.attr(rank="same")
+            for n in ["s1", "s2", "s3"]:
+                r1.node(n)
+        with o.subgraph() as r2:
+            r2.attr(rank="same")
+            for n in ["s4", "s5"]:
+                r2.node(n)
+        o.edge("s1", "s2")
+        o.edge("s2", "s3")
+        o.edge("s3", "s4")
+        o.edge("s4", "s5")
 
-    dot.edge("app_label", "s1")
+    dot.edge("app", "s1")
 
-    dot.node("cleaned_csv", "Cleaned CSV",                                   fillcolor=COLORS["output"], shape="folder")
-    dot.edge("s5",          "cleaned_csv")
-
-    # Verification feeds into report
-    dot.node("verif",   "Verification\n(re-run consistency diff,\nbefore vs after)",  fillcolor=COLORS["agent"])
-    dot.node("report",  "FinalPipelineReport\n+ Narrative report",                    fillcolor=COLORS["artifact"], style="rounded,filled,bold")
-    dot.node("out",     "Cleaned CSV\n+ Markdown report",                             fillcolor=COLORS["output"], shape="folder")
-
-    dot.edge("cleaned_csv", "verif")
-    dot.edge("manual",      "report", style="dashed", color="#888888")
-    dot.edge("verif",       "report")
-    dot.edge("report",      "out")
+    dot.node("cleaned_csv", "Cleaned CSV", fillcolor=COLORS["output"], shape="folder")
+    dot.edge("s5", "cleaned_csv")
 
     _render(dot, output_dir)
 
@@ -604,6 +581,61 @@ def create_four_layer_architecture(output_dir: str = OUTPUT_DIR) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 11. Final report assembly
+# ---------------------------------------------------------------------------
+
+def create_report_assembly(output_dir: str = OUTPUT_DIR) -> None:
+    dot = _base_graph("11_report_assembly", "Final report assembly",
+                      rankdir="TB", ranksep="0.9", nodesep="0.7")
+
+    # Inputs
+    dot.node("verif_rep",  "VerificationReport\n(per-column outcomes\n+ overall assessment)",
+             fillcolor=COLORS["artifact"])
+    dot.node("manual_rep", "Manual review findings\n(forwarded unchanged\nfrom action router)",
+             fillcolor=COLORS["artifact"])
+    dot.node("val_bundle", "Validation bundle\n(OrchestrationStepResult\n— all stage reports)",
+             fillcolor=COLORS["artifact"])
+
+    with dot.subgraph() as s:
+        s.attr(rank="same")
+        for n in ["verif_rep", "manual_rep", "val_bundle"]:
+            s.node(n)
+
+    # Aggregation
+    dot.node("agg", "Report aggregator\n(reporting.py)\n\ncollects per-stage findings\n+ remediation outcomes\n+ verification results",
+             fillcolor=COLORS["action"], style="rounded,filled,bold")
+
+    for n in ["verif_rep", "manual_rep", "val_bundle"]:
+        dot.edge(n, "agg")
+
+    # Structured report
+    dot.node("final_rep", "FinalPipelineReport\n\nper-stage issue counts\nremediation summary\nverification outcomes\noverall status",
+             fillcolor=COLORS["artifact"], style="rounded,filled,bold")
+    dot.edge("agg", "final_rep")
+
+    # Narrative agent
+    dot.node("narr_agent", "Narrative report agent\n(LLM)\n\nreceives FinalPipelineReport\n→ writes human-readable\nMarkdown summary",
+             fillcolor=COLORS["agent"])
+    dot.edge("final_rep", "narr_agent")
+
+    # Outputs
+    dot.node("json_out", "FinalPipelineReport\n(structured JSON)",
+             fillcolor=COLORS["output"], shape="folder")
+    dot.node("md_out",   "Narrative report\n(Markdown)",
+             fillcolor=COLORS["output"], shape="folder")
+
+    with dot.subgraph() as s:
+        s.attr(rank="same")
+        s.node("json_out")
+        s.node("md_out")
+
+    dot.edge("final_rep",  "json_out")
+    dot.edge("narr_agent", "md_out")
+
+    _render(dot, output_dir)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -619,6 +651,7 @@ def main() -> None:
     create_completeness_flow()
     create_remediation_policy_tree()
     create_four_layer_architecture()
+    create_report_assembly()
     print("Done.")
 
 

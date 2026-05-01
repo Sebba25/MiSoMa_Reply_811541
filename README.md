@@ -6,7 +6,7 @@ This repository documents a project developed for the Machine Learning course fo
 
 The **central idea** is that data quality should not be treated as a single undifferentiated task. Missing values, placeholder abuse, inconsistent formats, duplicate structures, suspicious anomalies, and cross-column contradictions are different problems and require different forms of evidence and different intervention policies.
 
-## Section 1. Introduction
+## 1. Introduction
 
 ### 1.1 Project Context and Institutional Setting
 
@@ -38,7 +38,7 @@ The **same underlying pipeline** is exposed through **three execution surfaces**
 
 The **main codebase** is under `src/`, and that is where the **real system logic** lives. It is organized into `core/` for shared logic and models, `tools/` for rule-based data processing, `validation/` for the inspection stages, `cleaning/` for planning fixes, generating code, applying changes, checking results, and reporting.
 
-The **technological stack** combines `pandas` and `numpy` for dataframe manipulation and local measurement, `pydantic` and `pydantic-ai` for typed agent handoffs, `openai` for the model interface, `python-dateutil` and `dateparser` for date normalization support, `streamlit` for the interactive application, and `logfire` for observability. In practical terms, this means that the project is not built around a notebook alone, but around a small engineered runtime in which deterministic Python code, typed contracts, LLM calls, and tracing infrastructure are combined inside one workflow.
+The **technological stack** combines `pandas` and `numpy` for dataframe manipulation and local measurement, [`pydantic`](https://docs.pydantic.dev/latest/) and [`pydantic-ai`](https://ai.pydantic.dev/) for typed agent handoffs, `openai` for the model interface, `python-dateutil` and `dateparser` for date normalization support, `streamlit` for the interactive application, and `logfire` for observability. In practical terms, this means that the project is not built around a notebook alone, but around a small engineered runtime in which deterministic Python code, typed contracts, LLM calls, and tracing infrastructure are combined inside one workflow.
 
 ```text
 AgentsAI/
@@ -46,7 +46,7 @@ AgentsAI/
 |   |-- core/
 |   |   |-- agents.py              # Agent definitions, shared model setup, Logfire bootstrap
 |   |   |-- cache.py               # Cache helpers for intermediate artifacts
-|   |   `-- models.py              # Pydantic models for typed stage handoffs
+|   |   `-- models.py              # Data models for typed stage handoffs
 |   |-- tools/
 |   |   |-- common_tools.py        # Shared utility helpers
 |   |   |-- schema_tools.py        # Deterministic dtype profiling and naming checks
@@ -127,7 +127,7 @@ python -m src.entrypoints.main Data/spesa.csv --stage validate
 The same CLI interface also exposes `dtype`, `schema`, `completeness`, `consistency`, `remediate`, `generate`, `apply`, `verify`, `clean`, and `report`.
 
 
-## Section 2. Methods
+## 2. Methods
 
 ### 2.1 General System Architecture and Conceptual Design
 
@@ -141,14 +141,14 @@ The workflow begins by **loading a dataset** and **building deterministic eviden
 
 This architecture serves **two purposes**. The first is **technical safety**. If one stage fails, the failure can be localized instead of contaminating the rest of the workflow invisibly. The second is **interpretability**. Because every stage emits a specific typed artifact, the intermediate state of the system can be inspected, cached, reloaded, and discussed both in the notebook and in the final report.
 
-Conceptually, the system can be read as a **four-layer architecture**. The **first layer** is the **contract layer**, in which Pydantic models define the typed artifacts exchanged across stages. The **second layer** is the **deterministic evidence-building layer**, in which local Python code measures parse rates, shapes, placeholders, duplicates, and anomalies without asking the model to rediscover raw facts. The **third layer** is the **agent layer**, where LLMs are used only for narrow interpretive or generative tasks that benefit from bounded reasoning. The **fourth layer** is the **host-side enforcement layer**, which remains the final authority whenever generated outputs must be validated before acceptance. 
+Conceptually, the system can be read as a **four-layer architecture**. The **first layer** is the **contract layer**, in which [Pydantic](https://docs.pydantic.dev/latest/) models define the typed artifacts exchanged across stages. The **second layer** is the **deterministic evidence-building layer**, in which local Python code measures parse rates, shapes, placeholders, duplicates, and anomalies without asking the model to rediscover raw facts. The **third layer** is the **agent layer**, where LLMs are used only for narrow interpretive or generative tasks that benefit from bounded reasoning. The **fourth layer** is the **host-side enforcement layer**, which remains the final authority whenever generated outputs must be validated before acceptance. 
 
 ![Four-layer architecture and dataflow](images/flow_diagrams/02_conceptual_architecture.gv.png)
 
 This decomposition is important because it explains why the pipeline remains both flexible and auditable: interpretation is delegated selectively, while structure, evidence, and final acceptance stay under explicit programmatic control.
 
 ### 2.2 Contract Layer and Typed Artifacts
-One of the defining engineering choices of the system is the use of **Pydantic models** as a **contract layer**. The file `src/core/models.py` defines the **structured objects** that move from one stage to another. In this context, a **schema** is an explicit description of what a stage is allowed to produce and what a downstream stage is allowed to expect. This means that the **output** of a stage is not a free-form paragraph that must later be reinterpreted, but a **validated artifact** with an explicit **schema**.
+One of the defining engineering choices of the system is the use of **[Pydantic](https://docs.pydantic.dev/latest/) models** as a **contract layer**. The file `src/core/models.py` defines the **structured objects** that move from one stage to another. In this context, a **schema** is an explicit description of what a stage is allowed to produce and what a downstream stage is allowed to expect. This means that the **output** of a stage is not a free-form paragraph that must later be reinterpreted, but a **validated artifact** with an explicit **schema**.
 
 For example, a raw column may arrive in pandas as generic `object` data, while the schema-stage handoff can still declare that the cleaned target should be `datetime64[ns]` with a canonical `ISO 8601 / date-time` pattern. Downstream stages then receive not just "some text about the column," but a structured statement of what that column is supposed to become after cleaning.
 
@@ -517,7 +517,7 @@ This stage is intentionally **constrained**. The **generated code is allowed one
 
 If a **generated cleaner fails host-side checks**, the `cleaner-repair-critic` agent receives the **authoritative validation issues** and **writes a diagnosis for the next attempt**. This creates a **repair loop** in which the generator **does not simply retry blindly**, but is **guided by explicit information** about which preservation rule, parsing branch, or structural guard failed.
 
-The implementation also contains a **stagnation mechanism**. This mechanism exists because **repeated failure was observed as a practical issue during development**. A retry loop can become trapped in variants of the same failing control flow. The stagnation detector watches for repeated code or repeated validation fingerprints. When the loop stalls, the prompt **injects a structural unblock brief** and **raises the temperature conservatively from the default deterministic setting into the `0.2` to `0.5` range**. This strategy is documented in the codebase and in the planning notes, but it should be described as the implemented strategy rather than as a benchmark-proven optimum.
+The implementation also contains a **stagnation mechanism** for the generator loop. Stagnation is detected when a new attempt **repeats the same cleaner code** as the previous attempt or **reproduces the same host-side validation fingerprint**. Once that happens, the next retry enters a **stagnation override** mode: the prompt injects a stricter rewrite brief with a mandatory control-flow skeleton, and the generator temperature is no longer left at the default `0`. Instead, it is bumped to **`0.2` on the first stagnant retry** and then increased gradually by **`0.1` per additional stagnant retry**, capped at **`0.5`**. The goal is not generic randomness, but to force a meaningfully different repair attempt when the loop has started repeating itself.
 
 #### 2.4.10 Cleaner Application and Verification
 
@@ -525,41 +525,86 @@ Once the **remediation plan** and the **accepted cleaners** are available, the *
 
 ![Cleaning half pipeline: action router, generation path, application ordering, and verification](images/flow_diagrams/09_cleaning_half_pipeline.gv.png)
 
-**Application alone**, however, **is not treated as success**. After the cleaned CSV is produced, the **verification stage** in `src/cleaning/verification.py` **re-runs consistency analysis and compares the new findings against the original ones**. The result is a **structured assessment** of whether each targeted issue was resolved, improved, left unchanged, or regressed. **Verification** is one of the **strongest safeguards** in the system because it **prevents the system from equating successful code generation with successful data-quality improvement**.
+**Application alone**, however, is not treated as success. After the cleaned CSV is produced, the **verification stage** in `src/cleaning/verification.py` re-runs consistency analysis and compares the new findings against the original ones. The result is a **structured assessment** of whether each targeted issue was resolved, improved, left unchanged, or regressed.
 
 ![Post-cleaning verification: re-read, reshape, diff engine, and outcome classification](images/flow_diagrams/10_post_cleaning_verification.gv.png)
 
+**Verification** is one of the **strongest safeguards** in the system because it prevents the system from equating successful code generation with successful data-quality improvement.
+
 #### 2.4.11 Final Reporting
 
-The system **separates factual aggregation from narrative explanation**. Once **validation, remediation, cleaning, and verification outputs** exist, `src/cleaning/reporting.py` builds a `FinalPipelineReport`, which functions as the **canonical factual summary of the run**. **Only after this factual object exists** does the **narrative layer generate a human-readable report** through the `narrative-frontmatter` and `narrative-section` agents.
+The system **separates factual aggregation** from **narrative explanation**. Once **validation**, **remediation**, **cleaning**, and **verification outputs** exist, the pipeline first builds a `FinalPipelineReport`, which functions as the **canonical factual summary** of the run. Only after this factual object exists does the **narrative layer** generate a human-readable report through the `narrative-frontmatter` and `narrative-section` agents.
 
-This **separation is methodologically important**. It ensures that the **final prose is grounded in a structured artifact** rather than replacing the evidence with free-form text. The **narrative report** is therefore a **presentation layer built on top of measured and validated outcomes**, not an **independent source of truth**.
+This distinction matters because the **factual report is deterministic**, while the **prose layer is only the presentation layer**. The factual stage does **not** ask an agent to decide what happened. It merges the already-produced validation, remediation, cleaning, and verification outputs into one structured object: actions are grouped by status, findings are carried forward, verification diffs are inserted, and final dataset-level counts are added. In other words, the **source of truth** is a typed factual record produced before any narrative generation begins.
+
+Also, the narrative agents do not receive the raw pipeline state directly but  **briefing blocks derived from the structured report**. For example, the `narrative-frontmatter` agent is given a compact text document.
+
+```text
+DATASET: spesa
+TOTAL_ROWS_CLEANED: 7502
+VALIDATION_SUMMARY: {'schema_issues': 7, 'completeness_columns_with_missing': 14, 'consistency_findings': 6, 'anomaly_findings': 3, 'cross_column_findings': 2, 'duplicate_groups': 4}
+APPLIED_ACTIONS: 71
+DEFERRED_ACTIONS: 9
+FAILED_ACTIONS: 0
+NOT_NEEDED_ACTIONS: 0
+GENERATED_CLEANERS: 6
+ANOMALY_FINDINGS: 3
+CROSS_COLUMN_FINDINGS: 2
+DUPLICATE_GROUPS: 4
+VERIFICATION_SUMMARY: All targeted consistency findings were resolved or improved with no regressions.
+UNRESOLVED_RISKS: ['Anomaly findings remain review-only.']
+OVERALL_SUMMARY: Validation found 36 section-level findings/signals. Applied 71 remediation actions, left 9 proposed without auto-apply, recorded 0 failed actions, and dropped 41 exact duplicate row(s).
+```
+
+This means that the **narrative prose is grounded**, but it is not itself the d**eterministic layer**. Its structure is still enforced: the front matter must return a typed opening block, each section must return one typed section object, and the final narrative report is assembled from those validated pieces. The generated prose is therefore constrained by structured inputs and structured outputs, even though the wording itself is still model-generated. The reporting stage is best understood as **deterministic factual assembly first, structured narrative rendering second**.
 
 ### 2.5 Design Choices and Prompt Strategy
 
-**Pydantic and PydanticAI were chosen** because the **project depends on strict structured handoffs between many stages**. A **looser conversational orchestration framework** would have made **debugging and validation significantly harder**, because almost **every stage in this pipeline must produce an artifact that can be inspected and reused by the next stage**.
+**[Pydantic](https://docs.pydantic.dev/latest/)** and **[Pydantic AI](https://ai.pydantic.dev/)** were chosen because the system depends on strict **structured handoffs** between many stages. A **looser conversational orchestration framework** would have made **debugging and validation significantly harder**, because almost every stage in this pipeline must produce an artifact that can be inspected and reused by the next stage.
 
-The **prompt strategy** follows the same engineering logic. The prompt does not try to let the model "do everything." Instead, each agent prompt tries to **narrow the task to one operational responsibility**, define which evidence is authoritative, state what the model must not invent, and force the reply into a typed output contract. In practice, the schema prompt tries to infer a cleaned dtype from bounded profiling evidence, the consistency prompt tries to decide whether an inconsistency is truly actionable, and the generator prompt tries to write one cleaning function that satisfies an explicit contract rather than improvising a free-form remediation plan. The purpose of the prompt is therefore **to constrain the model into a small role inside the pipeline**, not to replace the pipeline itself.
+The **prompt strategy** follows the same engineering logic. The prompt is **not** treated as the component that performs the work by itself. Its role is to **delimit what the agent is allowed to do**: which evidence is authoritative, which decision it is being asked to make, which facts it must not invent, and which typed output it must return. In practice, the schema agent is asked to infer a cleaned dtype from bounded profiling evidence, the consistency agent is asked to judge whether an inconsistency is truly actionable, and the generator agent is asked to write one cleaning function that satisfies an explicit contract rather than improvising a free-form remediation plan. The purpose of the prompt is therefore to **bound the agent's role inside the pipeline**, not to replace the pipeline itself.
 
-The **prompt design** is also **intentionally token-conscious**. The **system generally does not send full raw columns to the model**. It sends **bounded profiles**, **capped samples**, **representative examples**, and **structured local facts**. This **reduces cost** and **encourages the model to reason over distilled evidence rather than over long noisy inputs**. The **code-execution capability** is enabled only for the `completeness-analysis` and `column-cleaner-generator` agents, and even there it is **bounded**. The system therefore **uses tool execution as a narrow controlled capability rather than as a free-form sandbox**. In particular, the cleaner generator may use sandboxed execution to test a candidate function on bounded examples, but this self-test is **not** the final acceptance criterion: the decisive authority remains the later **host-side validator**, which re-checks the returned code deterministically before any cleaner is trusted.
+For example, a format-consistency call is framed as a **narrow decision over a structured attachment**, not as an open request to "clean the column." A shortened instruction block looks like this:
+
+```text
+You are the column-level Format Consistency agent.
+You receive a ColumnFormatFacts document for one column and must decide
+whether a format inconsistency exists and, if so, describe it precisely
+for the downstream cleaning agent.
+
+Decision rules:
+- return finding = null if machine_format_candidate is false,
+  dominant_shape_pct is below threshold, or inconsistent_rows is 0
+- return finding = null for descriptive or free-text columns
+- only report a finding when there is a clear dominant format
+  and a measurable set of outliers that a cleaning function could fix
+
+When you report a finding:
+- expected_pattern must describe one canonical target format only
+- example_inconsistent_values must copy the provided outlier values verbatim
+- evidence must cite dominant_shape, dominant_shape_pct, inconsistent_rows,
+  and the target dtype
+- suggested_strategy must specify how each outlier shape should be transformed
+```
+
+The important point is that the **prompt does not create the evidence**. The evidence has already been measured and packaged upstream. The prompt only tells the agent how to operate over that bounded evidence and what kind of output artifact it is allowed to produce.
+
+The **prompt design** is also **intentionally token-conscious**. The **system generally does not send full raw columns to the model**. It sends **bounded profiles**, **capped samples**, **representative examples**, and **structured local facts**. This **reduces cost** and **encourages the model to reason over distilled evidence rather than over long noisy inputs**. The **code-execution capability** is enabled only for the `completeness-analysis` and `column-cleaner-generator` agents, and even there it is **bounded**. The system therefore uses tool execution as a narrow controlled capability rather than as a free-form sandbox. In particular, the cleaner generator may use sandboxed execution to test a candidate function on bounded examples, but this self-test is **not** the final acceptance criterion: the decisive authority remains the later **host-side validator**, which re-checks the returned code deterministically before any cleaner is trusted.
 
 Another important design choice is the default use of **`temperature = 0`** for the main operational agents in `src/core/agents.py`, including schema inference, completeness analysis, format consistency, and cleaner generation. The reason is not that the outputs become literally mathematically deterministic in every circumstance, but that the system wants them to be **as stable and reproducible as possible** when the same bounded evidence is presented again. In this project, unnecessary variation is usually harmful: a small gratuitous change in inferred dtype, cleaning rationale, or branch structure can propagate downstream into validation mismatches, different remediation decisions, or harder-to-debug retry behavior. For that reason, the default prompt configuration is deliberately conservative. Only when the cleaning loop detects **stagnation** does the system intentionally relax that setting and raise temperature to encourage a meaningfully different repair attempt.
 
-## Section 3. Experimental Design
+## 3. Experimental Design
 
-## 3.1 Main Experimental Purpose
+The main purpose of the project was not only to build a data-cleaning pipeline, but to understand which **architectural choices** make LLM-assisted cleaning reliable enough to be useful on heterogeneous real tabular data. In practice, the project evolved through a **trial-and-error process** in which several initial designs were found to be too expensive, too brittle, or too difficult to validate, and were then replaced by more constrained alternatives.
 
-The main purpose of the project was not only to build a data-cleaning pipeline, but to understand which architectural choices make LLM-assisted cleaning reliable enough to be useful on heterogeneous real tabular data. In practice, the project evolved through a trial-and-error process in which several initial designs were found to be too expensive, too brittle, or too difficult to validate, and were then replaced by more constrained alternatives.
+More specifically, the experiments were used to validate the target contribution of the project: a staged pipeline in which **local deterministic analysis**, **bounded agent reasoning**, **constrained code generation**, **host-side validation**, and **post-application verification** are combined so that cleaning decisions are both affordable and auditable. The final system should therefore be read not as a single model prompt, but as the result of iterative experimentation on how to distribute work between local code and LLM agents.
 
-More specifically, the experiments were used to validate the target contribution of the project: a staged pipeline in which local deterministic analysis, bounded agent reasoning, constrained code generation, host-side validation, and post-application verification are combined so that cleaning decisions are both affordable and auditable. The final system should therefore be read not as a single model prompt, but as the result of iterative experimentation on how to distribute work between local code and LLM agents.
+### 3.1 From Full-Column Prompting to Bounded Profiling
 
-## 3.2 Experiment 1: From Full-Column Prompting to Bounded Profiling
-
-Main purpose.
-The first experiment addressed the cost and scalability of schema and format inference. An early design gave the model entire raw columns, but this quickly produced very large prompts and unsustainable token usage on realistic datasets. The goal of this experiment was therefore to determine whether the system could preserve useful semantic inference while drastically reducing prompt size.
+The first experiment addressed the **cost** and **scalability** of schema and format inference. An early design gave the model entire raw columns, but this quickly produced very large prompts and **unsustainable token usage** on realistic datasets. The goal of this experiment was therefore to determine whether the system could preserve useful semantic inference while drastically reducing prompt size.
 
 Baseline.
-The baseline was the earliest full-column prompting strategy, in which the model received much larger portions of raw column content directly. The final approach replaced this with a mixed strategy: a random sample of up to 5% of dataset rows, capped at 500 unique non-null values per column where appropriate, combined with full-column deterministic statistics computed locally.
+The baseline was the earliest full-column prompting strategy, in which the model received much larger portions of raw column content directly. The final approach replaced this idea with a mixed strategy: a random sample of up to 5% of dataset rows, capped at 500 unique non-null values per column where appropriate, combined with full-column deterministic statistics computed locally.
 
 Evaluation metric(s).
 The main metrics were token consumption, prompt compactness, and whether the agent still produced useful schema and format interpretations. These metrics were appropriate because the objective of this experiment was not to maximize raw recall over every column value, but to make LLM reasoning affordable while preserving enough evidence to infer the intended semantic type and dominant format of a column.
