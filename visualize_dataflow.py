@@ -15,12 +15,15 @@ OUTPUT_DIR = "images/flow_diagrams"
 # Shared style helpers
 # ---------------------------------------------------------------------------
 
-FONT = "Helvetica"
+FONT      = "Helvetica-Bold"
+FONT_BODY = "Helvetica-Bold"
 
-NODE_DEFAULTS  = dict(shape="box", style="rounded,filled", fontname=FONT, fontsize="11",
-                      margin="0.18,0.10", fontcolor="#2D2D2D")
-EDGE_DEFAULTS  = dict(fontname=FONT, fontsize="9", color="#555555", fontcolor="#555555")
-GRAPH_DEFAULTS = dict(bgcolor="white", fontname=FONT, pad="0.4", nodesep="0.55", ranksep="0.75", concentrate="true")
+NODE_DEFAULTS  = dict(shape="box", style="rounded,filled", fontname=FONT_BODY, fontsize="11",
+                      margin="0.18,0.10", fontcolor="#2D2D2D", penwidth="1.6")
+EDGE_DEFAULTS  = dict(fontname=FONT_BODY, fontsize="9", color="#555555", fontcolor="#555555",
+                      penwidth="1.4")
+GRAPH_DEFAULTS = dict(bgcolor="white", fontname=FONT, pad="0.4", nodesep="0.55", ranksep="0.75",
+                      concentrate="true", splines="line")
 
 # Reply brand palette
 COLORS = {
@@ -55,7 +58,8 @@ def _render(dot: graphviz.Digraph, output_dir: str) -> None:
 # ---------------------------------------------------------------------------
 
 def create_dataflow_diagram(output_dir: str = OUTPUT_DIR) -> None:
-    dot = _base_graph("PipelineOverview", "Main pipeline overview", rankdir="TB", ranksep="0.9")
+    dot = _base_graph("0_pipeline_overview", "Main pipeline overview", rankdir="TB",
+                      ranksep="1.1", nodesep="0.7", concentrate="false")
 
     # --- Input ---
     dot.node("csv",   "CSV input\n(Data/)",                 fillcolor=COLORS["source"], shape="folder")
@@ -66,51 +70,60 @@ def create_dataflow_diagram(output_dir: str = OUTPUT_DIR) -> None:
     with dot.subgraph(name="cluster_validation") as v:
         v.attr(label="Validation half", style="rounded,filled", fillcolor=COLORS["cluster_v"],
                color="#22A30A", penwidth="1.5", fontname=FONT, fontsize="12", fontcolor="#22A30A")
-        # Force all stage nodes onto the same horizontal rank
         with v.subgraph() as same:
             same.attr(rank="same")
-            same.node("schema",   "1. Schema\nvalidation",     fillcolor=COLORS["agent"])
-            same.node("complete", "2. Completeness\nanalysis",  fillcolor=COLORS["agent"])
-            same.node("consist",  "3. Format\nconsistency",     fillcolor=COLORS["agent"])
-            same.node("anomaly",  "4. Anomaly\ndetection",      fillcolor=COLORS["agent"])
-            same.node("cross",    "5. Cross-column\nchecks",    fillcolor=COLORS["agent"])
-            same.node("dupes",    "6. Duplicate\ndetection",    fillcolor=COLORS["agent"])
+            same.node("schema",   "1. Schema\nvalidation",    fillcolor=COLORS["agent"])
+            same.node("complete", "2. Completeness\nanalysis", fillcolor=COLORS["agent"])
+            same.node("consist",  "3. Format\nconsistency",    fillcolor=COLORS["agent"])
+            same.node("anomaly",  "4. Anomaly\ndetection",     fillcolor=COLORS["agent"])
+            same.node("cross",    "5. Cross-column\nchecks",   fillcolor=COLORS["agent"])
+            same.node("dupes",    "6. Duplicate\ndetection",   fillcolor=COLORS["agent"])
         # Invisible edges to preserve left-to-right order
         for a, b in [("schema","complete"),("complete","consist"),("consist","anomaly"),
                      ("anomaly","cross"),("cross","dupes")]:
             v.edge(a, b, style="invis")
 
-    # --- Intermediate bundle node (between the two halves) ---
+    # --- Intermediate bundle node ---
     dot.node("bundle", "Validation bundle\n(OrchestrationStepResult)",
              fillcolor=COLORS["artifact"], style="rounded,filled,bold")
 
-    # --- Cleaning cluster ---
+    # --- Cleaning cluster: row 1 = remediate/generate/apply, row 2 = verify/report ---
     with dot.subgraph(name="cluster_cleaning") as c:
         c.attr(label="Cleaning half", style="rounded,filled", fillcolor=COLORS["cluster_c"],
                color="#1A8A00", penwidth="1.5", fontname=FONT, fontsize="12", fontcolor="#1A8A00")
-        c.node("remediate", "1. Remediation\nplanning",  fillcolor=COLORS["agent"])
-        c.node("generate",  "2. Cleaner\ngeneration",    fillcolor=COLORS["agent"])
-        c.node("apply",     "3. Application\n(execute)", fillcolor=COLORS["action"])
-        c.node("verify",    "4. Verification",           fillcolor=COLORS["agent"])
-        c.node("report",    "5. Report\ngeneration",     fillcolor=COLORS["agent"])
-        c.edges([
-            ("remediate", "generate"),
-            ("generate",  "apply"),
-            ("apply",     "verify"),
-            ("verify",    "report"),
-        ])
+        # Row 1
+        with c.subgraph() as row1:
+            row1.attr(rank="same")
+            row1.node("remediate", "1. Remediation\nplanning",  fillcolor=COLORS["agent"])
+            row1.node("generate",  "2. Cleaner\ngeneration",    fillcolor=COLORS["agent"])
+            row1.node("apply",     "3. Application\n(execute)", fillcolor=COLORS["action"])
+        # Row 2
+        with c.subgraph() as row2:
+            row2.attr(rank="same")
+            row2.node("verify", "4. Verification",      fillcolor=COLORS["agent"])
+            row2.node("report", "5. Report\ngeneration", fillcolor=COLORS["agent"])
+        # Sequence edges
+        c.edge("remediate", "generate")
+        c.edge("generate",  "apply")
+        c.edge("apply",     "verify")
+        c.edge("verify",    "report")
+        # Invisible edge to keep row2 left-aligned under row1
+        c.edge("remediate", "verify", style="invis")
 
     # --- Outputs ---
     dot.node("clean_csv", "Cleaned CSV",                  fillcolor=COLORS["output"], shape="folder")
     dot.node("report_md", "Narrative report\n(Markdown)", fillcolor=COLORS["output"], shape="folder")
 
     # --- Connections ---
-    dot.edge("entry",    "schema",   label="dataset")
+    # Entry connects to every validation stage
+    for stage in ["schema", "complete", "consist", "anomaly", "cross", "dupes"]:
+        dot.edge("entry", stage)
+    # All stages feed the bundle
     for stage in ["schema", "complete", "consist", "anomaly", "cross", "dupes"]:
         dot.edge(stage, "bundle")
-    dot.edge("bundle",   "remediate", label="all findings")
-    dot.edge("report",   "clean_csv")
-    dot.edge("report",   "report_md")
+    dot.edge("bundle", "remediate")
+    dot.edge("report", "clean_csv")
+    dot.edge("report", "report_md")
 
     _render(dot, output_dir)
 
@@ -537,6 +550,86 @@ def create_remediation_policy_tree(output_dir: str = OUTPUT_DIR) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 12. Four-layer conceptual architecture
+# ---------------------------------------------------------------------------
+
+def create_four_layer_architecture(output_dir: str = OUTPUT_DIR) -> None:
+    dot = _base_graph("1_conceptual_architecture", "Four-layer conceptual architecture",
+                      rankdir="TB", ranksep="1.0", nodesep="0.65", concentrate="false")
+
+    # ── Layer 1 — Contract ──────────────────────────────────────────────────
+    with dot.subgraph(name="cluster_L1") as c:
+        c.attr(label="Layer 1 — Contract Layer",
+               style="rounded,filled", fillcolor=COLORS["cluster_v"],
+               color="#22A30A", penwidth="1.5", fontname=FONT, fontsize="12", fontcolor="#22A30A")
+        with c.subgraph() as s:
+            s.attr(rank="same")
+            s.node("PM",  "Pydantic Models\n(models.py)",     fillcolor=COLORS["artifact"])
+            s.node("ART", "Typed Artifacts\n(stage outputs)", fillcolor=COLORS["artifact"],
+                   style="rounded,filled,bold")
+        c.edge("PM", "ART", style="invis")
+
+    # ── Layer 2 — Deterministic Evidence ───────────────────────────────────
+    with dot.subgraph(name="cluster_L2") as c:
+        c.attr(label="Layer 2 — Deterministic Evidence-Building Layer",
+               style="rounded,filled", fillcolor=COLORS["cluster_c"],
+               color="#1A8A00", penwidth="1.5", fontname=FONT, fontsize="12", fontcolor="#1A8A00")
+        with c.subgraph() as s:
+            s.attr(rank="same")
+            s.node("PR", "Profiling\n(parse rates, shapes)",           fillcolor=COLORS["action"])
+            s.node("CK", "Completeness Checks\n(nulls, placeholders)", fillcolor=COLORS["action"])
+            s.node("DU", "Duplicate Detection",                        fillcolor=COLORS["action"])
+            s.node("AN", "Anomaly Measurement\n(statistical)",         fillcolor=COLORS["action"])
+        for a, b in [("PR","CK"),("CK","DU"),("DU","AN")]:
+            c.edge(a, b, style="invis")
+        c.node("EV", "Evidence Bundle", fillcolor=COLORS["agent"], style="rounded,filled,bold")
+        for src in ["PR","CK","DU","AN"]:
+            c.edge(src, "EV")
+
+    # ── Layer 3 — Agent Layer ───────────────────────────────────────────────
+    with dot.subgraph(name="cluster_L3") as c:
+        c.attr(label="Layer 3 — Agent Layer  (LLM-backed)",
+               style="rounded,filled", fillcolor=COLORS["cluster_v"],
+               color="#22A30A", penwidth="1.5", fontname=FONT, fontsize="12", fontcolor="#22A30A")
+        with c.subgraph() as s:
+            s.attr(rank="same")
+            s.node("VA", "Validation Agent\n(schema & format)",    fillcolor=COLORS["agent"])
+            s.node("RA", "Remediation Agent\n(action planning)",   fillcolor=COLORS["agent"])
+            s.node("CA", "Cleaner Agent\n(transformation gen.)",   fillcolor=COLORS["agent"])
+            s.node("NA", "Narrative Agent\n(report prose)",        fillcolor=COLORS["agent"])
+        c.edge("VA", "RA")
+        c.edge("RA", "CA")
+        c.edge("CA", "NA", style="invis")
+
+    # ── Layer 4 — Host-Side Enforcement ────────────────────────────────────
+    with dot.subgraph(name="cluster_L4") as c:
+        c.attr(label="Layer 4 — Host-Side Enforcement Layer",
+               style="rounded,filled", fillcolor=COLORS["cluster_c"],
+               color="#0E5C00", penwidth="1.5", fontname=FONT, fontsize="12", fontcolor="#0E5C00")
+        with c.subgraph() as s:
+            s.attr(rank="same")
+            s.node("VS", "Output Validation\n(Pydantic parse)",     fillcolor=COLORS["source"])
+            s.node("CR", "Critic / Retry Loop\n(stagnation guard)", fillcolor=COLORS["source"])
+            s.node("VF", "Post-Cleaning\nVerification",             fillcolor=COLORS["source"])
+            s.node("FR", "Final Acceptance\n(diff engine)",         fillcolor=COLORS["agent"],
+                   style="rounded,filled,bold")
+        c.edge("VS", "CR")
+        c.edge("CR", "VF")
+        c.edge("VF", "FR")
+
+    # ── Cross-layer flow (one clean edge per layer boundary) ────────────────
+    dot.edge("ART", "PR")   # L1 → L2: typed schema into profiling
+    dot.edge("EV",  "VA")   # L2 → L3: evidence bundle into validation agent
+    dot.edge("VA",  "VS")   # L3 → L4: validated output into enforcement
+    dot.edge("NA",  "VS")   # narrative agent also passes through enforcement
+    # L4 → L1 feedback (dashed, non-constraining to avoid long stretch)
+    dot.edge("FR", "ART", style="dashed", color="#555555", fontcolor="#555555",
+             constraint="false")
+
+    _render(dot, output_dir)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -552,6 +645,7 @@ def main() -> None:
     create_verification_detail()
     create_completeness_flow()
     create_remediation_policy_tree()
+    create_four_layer_architecture()
     print("Done.")
 
 

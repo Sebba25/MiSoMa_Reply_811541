@@ -121,38 +121,40 @@ The same CLI interface also exposes `dtype`, `schema`, `completeness`, `consiste
 
 ## Section 2. Methods
 
-### 2.1 General System Architecture
+### 2.1 General System Architecture and Conceptual Design
 
 The **overall architecture** is based on a **strict separation** between inspection, diagnosis, remediation planning, transformation, and verification. This choice reflects the view that heterogeneous data-quality problems are handled more safely when the workflow is decomposed into narrower stages with explicit responsibilities.
 
-The workflow begins by **loading a dataset and building deterministic evidence about it**, then **translating those observations** into **structured findings**. Only after those have been formalized does the **system decide whether a corrective action is justified**. When executable **cleaning logic is needed**, the latter is **generated under a narrow contract** and is **validated by the host system** before being trusted. After application, the **dataset is checked again** to confirm that the **targeted issue was actually reduced**.
+![High-level pipeline overview](images/flow_diagrams/PipelineOverview.gv.png)
+
+A **broad architectural overview** of the system is useful because it makes visible the **main split between the validation half and the cleaning half**, while still preserving the end-to-end flow from raw CSV input to cleaned dataset and narrative report.
+
+The workflow begins by **loading a dataset** and **building deterministic evidence** about it, then **translating those observations** into **structured findings**. Only after those have been formalized does the system decide whether a **corrective action** is **justified**. When executable **cleaning logic** is needed, the latter is **generated** under a **narrow contract** and is **validated** by the host system before being trusted. After application, the dataset is checked again to confirm that the **targeted issue** was actually reduced.
 
 This architecture serves **two purposes**. The first is **technical safety**. If one stage fails, the failure can be localized instead of contaminating the rest of the workflow invisibly. The second is **interpretability**. Because every stage emits a specific typed artifact, the intermediate state of the system can be inspected, cached, reloaded, and discussed both in the notebook and in the final report.
 
 Conceptually, the system can be read as a **four-layer architecture**. The **first layer** is the **contract layer**, in which Pydantic models define the typed artifacts exchanged across stages. The **second layer** is the **deterministic evidence-building layer**, in which local Python code measures parse rates, shapes, placeholders, duplicates, and anomalies without asking the model to rediscover raw facts. The **third layer** is the **agent layer**, where LLMs are used only for narrow interpretive or generative tasks that benefit from bounded reasoning. The **fourth layer** is the **host-side enforcement layer**, which remains the final authority whenever generated outputs must be validated before acceptance. This decomposition is important because it explains why the pipeline remains both flexible and auditable: interpretation is delegated selectively, while structure, evidence, and final acceptance stay under explicit programmatic control.
 
-![High-level pipeline overview](images/flow_diagrams/PipelineOverview.gv.png)
-
-This figure is the **broad architectural overview** of the system. It is useful in this section because it makes visible the **main split between the validation half and the cleaning half**, while still preserving the end-to-end flow from raw CSV input to cleaned dataset and narrative report.
+![Four-layer architecture and dataflow](images/flow_diagrams/FourLayerArchitecture.gv.png)
 
 ### 2.2 Main Execution Surfaces
 
 The **same pipeline logic** is exposed through **three surfaces**: the notebook `main.ipynb` for narrative illustration, the CLI in `src/entrypoints/` for stage-by-stage or end-to-end operational runs, and the Streamlit app in `app.py` for interactive use. All three surfaces share the same underlying modules, so the system should not be read as a notebook prototype.
 
 ### 2.3 Contract Layer and Typed Artifacts
-One of the defining engineering choices of the system is the use of **Pydantic models** as a **contract layer**. The file `src/core/models.py` defines the **structured objects** that **move from one stage to another**. This means that the **output** of a stage is not a free-form paragraph that must later be reinterpreted, but a **validated artifact with an explicit schema**.
+One of the defining engineering choices of the system is the use of **Pydantic models** as a **contract layer**. The file `src/core/models.py` defines the **structured objects** that move from one stage to another. This means that the **output** of a stage is not a free-form paragraph that must later be reinterpreted, but a **validated artifact** with an explicit **schema**.
 
-This choice is central to the **reliability of the pipeline**. In an **agentic workflow**, one of the main **risks** is not only that a stage may produce an incorrect answer, but that it **may produce an answer with the wrong structure**. A **malformed handoff** can **silently poison every downstream stage**. Typed artifacts reduce this risk and improve traceability. They also make it **possible to cache intermediate results**, **compare runs, and expose internal state clearly** in the notebook and in the application.
+This choice is central to the **reliability of the pipeline**. In an **agentic workflow**, one of the main **risks** is not only that a stage may produce an incorrect answer, but that it **may produce an answer with the wrong structure**. A **malformed handoff** can **silently poison every downstream stage**. Typed artifacts reduce this risk and improve traceability. They also make it possible to cache intermediate results, compare runs, and expose internal state clearly in the notebook and in the application.
 
 ### 2.4 Agent Runtime, Retries, and Observability
 
-All **agents are defined** centrally in `src/core/agents.py`, and all runtime control is routed through **shared utilities**. This layer exists because **LLM calls are the least deterministic** and most failure-prone component of the pipeline. Rate limits, transient connection failures, and inconsistent retry logic would make the system difficult to reason about if every module handled them independently.
+All **agents are defined** centrally in `src/core/agents.py`, and all runtime control is routed through **shared utilities**. This layer exists because **LLM calls** are the **least deterministic** and most failure-prone component of the pipeline. Rate limits, transient connection failures, and inconsistent retry logic would make the system difficult to reason about if every module handled them independently.
 
-The runtime therefore **centralizes model configuration, tracing, and retry policy**. **Logfire** is used for **observability** and **environment variables** are loaded through `python-dotenv`. The **current configuration** in `src/core/agents.py` sets the shared model to `openai-responses:gpt-5.4-nano`, although the design allows the model choice to be changed in one place rather than scattered across the codebase. This **centralization supports repeatability and debugging**: a failed agent call can be inspected as a single event inside a larger engineered process.
+The runtime therefore **centralizes model configuration**, tracing, and retry policy. **Logfire** is used for **observability** and **environment variables** are loaded through `python-dotenv`. The **current configuration** in `src/core/agents.py` sets the shared model to `openai-responses:gpt-5.4-nano`, although the design allows the model choice to be changed in one place rather than scattered across the codebase. This **centralization supports repeatability and debugging**: a failed agent call can be inspected as a single event inside a larger engineered process.
 
 ![Logfire trace of staged agent execution](images/logfire/01_logfire_interface.png)
 
-The Logfire trace shown above is aligned with this description. It displays **individual agent runs as separate observable events**, including validation agents, repeated `column-cleaner-generator` attempts, `cleaner-repair-critic` iterations, and narrative-report steps, together with timestamps and run durations. It therefore makes the **operational structure of the pipeline visible during execution**, rather than only after the final artifacts have been written.
+The Logfire trace displays **individual agent runs as separate observable events**, therefore makeing the **operational structure** of the pipeline visible during execution, rather than only after the final artifacts have been written.
 
 **Observability tracing is opt-in and credential-gated**. Logfire instrumentation is activated only when a `LOGFIRE_TOKEN` environment variable is present. If the token is absent, the pipeline runs in full without any tracing side effects. This means that the system can be executed in a minimal environment with only an `OPENAI_API_KEY`, and tracing can be enabled separately when a Logfire project is configured. The `.env` file shown in the repository structure (Section 1.5) is the intended location for both credentials. When Logfire is active, every agent invocation, tool call, retry attempt, and stage transition is recorded as a structured span, which makes it possible to audit exactly what the pipeline did during a run, at what cost, and where failures or retries occurred.
 
@@ -164,7 +166,7 @@ The following subsections describe the ordered validation, remediation, cleaning
 
 The **dataset** is loaded into a pandas dataframe and becomes the **authoritative input for validation**. This first operational step matters because every later stage assumes that the dataframe, rather than a free-form textual description of the dataset, is the real object being inspected. The pipeline therefore begins from a concrete tabular state, not from a vague prompt such as "clean this CSV."
 
-In the **verification stage**, the **cleaned output may be re-read** as **strings** so that formatting **differences** are **not hidden by automatic dtype normalization**. This detail is important because the **project evaluates** not only semantic compatibility but also whether the **cleaned values respect the intended canonical representation**. In other words, the **system** is **not satisfied** by a **value that merely parses**; it also **cares** whether the **value has been normalized into the correct target form**.
+In the **verification stage**, the **cleaned output may be re-read** as **strings** so that **formatting differences** are not hidden by automatic dtype normalization. This detail is important because the **system evaluates** not only semantic compatibility but also whether the cleaned values respect the **intended canonical representation**. In other words, the **system** is **not satisfied** by a **value that merely parses**; it also **cares** whether the **value has been normalized into the correct target form**.
 
 #### 2.5.2 Schema Validation
 After the raw dataframe has been loaded and framed, **schema validation** becomes the **first domain-facing stage**. Its **purpose** is to **establish what each column is supposed** to **represent after cleaning**, rather than merely describing how the raw values happened to be stored. This **distinction is fundamental**. A column may be loaded as strings while still being, in substance, a date field or a numeric field corrupted by a minority of messy values. What the **system tries to understand** is what a **certain column is meant to represent rather than how it happens to be encoded** in the raw data. The **schema handoff makes this visible** in a concrete way.
