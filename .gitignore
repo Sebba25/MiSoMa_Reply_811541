@@ -8,3 +8,6 @@ __pycache__/
 **/.cleaning_cache/
 
 Resources/
+
+visualize_dataflow.py
+visualize_results.py
