@@ -537,6 +537,8 @@ The system **separates factual aggregation** from **narrative explanation**. Onc
 
 This distinction matters because the **factual report is deterministic**, while the **prose layer is only the presentation layer**. The factual stage does **not** ask an agent to decide what happened. It merges the already-produced validation, remediation, cleaning, and verification outputs into one structured object: actions are grouped by status, findings are carried forward, verification diffs are inserted, and final dataset-level counts are added. In other words, the **source of truth** is a typed factual record produced before any narrative generation begins.
 
+![Final report assembly: inputs, aggregation, FinalPipelineReport, narrative agent, and outputs](images/flow_diagrams/11_report_assembly.gv.png)
+
 Also, the narrative agents do not receive the raw pipeline state directly but  **briefing blocks derived from the structured report**. For example, the `narrative-frontmatter` agent is given a compact text document.
 
 ```text
@@ -601,16 +603,12 @@ More specifically, the experiments were used to validate the target contribution
 
 ### 3.1 From Full-Column Prompting to Bounded Profiling
 
-The first experiment addressed the **cost** and **scalability** of schema and format inference. An early design gave the model entire raw columns, but this quickly produced very large prompts and **unsustainable token usage** on realistic datasets. The goal of this experiment was therefore to determine whether the system could preserve useful semantic inference while drastically reducing prompt size.
+The first experiment addressed the **cost** and **scalability** of schema and format inference. An early design gave the model entire raw columns, but this quickly produced very large prompts and **unsustainable token usage** on realistic datasets. The idea to solve this issue was to replace this approach with a **mixed strategy**. The agent receives a random sample of up to 5% of dataset rows, capped at 500 unique non-null values per column where appropriate, combined with full-column deterministic statistics computed locally.
 
-Baseline.
-The baseline was the earliest full-column prompting strategy, in which the model received much larger portions of raw column content directly. The final approach replaced this idea with a mixed strategy: a random sample of up to 5% of dataset rows, capped at 500 unique non-null values per column where appropriate, combined with full-column deterministic statistics computed locally.
-
-Evaluation metric(s).
-The main metrics were token consumption, prompt compactness, and whether the agent still produced useful schema and format interpretations. These metrics were appropriate because the objective of this experiment was not to maximize raw recall over every column value, but to make LLM reasoning affordable while preserving enough evidence to infer the intended semantic type and dominant format of a column.
-
-Resulting design decision.
-This experiment led to one of the central design choices of the final system: the LLM is not given full columns when the task is conceptual inference. Instead, the system provides bounded representative evidence, while local code computes global statistics over the entire dataset. This division of labor reduced cost and made the pipeline feasible on larger datasets.
+- **Main Purpose**: Determine whether the system could preserve useful semantic inference while drastically reducing prompt size.
+- **Baseline**: the baseline was the earliest full-column prompting strategy, in which the model received much larger portions of raw column content directly. 
+- **Evaluation metrics**: in order to asses the new performance **token consumption**, **prompt compactness**, and whether the agent still produced **useful schema and format interpretations** were considered. These metrics were appropriate because the objective of this experiment was not to maximize raw recall over every column value, but to make LLM reasoning affordable while preserving enough evidence to infer the intended semantic type and dominant format of a column.
+- **Resulting design decision**: this experiment led to one of the central design choices of the final system: the LLM is not given full columns when the task is **conceptual inference**. Instead, the system provides bounded representative evidence, while local code computes global statistics over the entire dataset. This division of labor reduced cost and made the pipeline feasible on larger datasets.
 
 ## 3.3 Experiment 2: From Direct Cleaning to Example-Guided Code Generation
 
@@ -715,8 +713,6 @@ The same trace also suggests that retry variability does not expand into uncontr
 ### 4.4 Summary of Run Outcomes
 
 The table below consolidates the quantitative outcomes of the end-to-end run on `spesa.csv`, extracted from the cached pipeline artifacts.
-
-![Quantitative run summary table](images/findings/06_results_summary_table.png)
 
 | Metric | Value |
 |--------|-------|
