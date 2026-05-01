@@ -158,19 +158,7 @@ After the raw dataframe has been loaded and framed, **schema validation** become
 
 Each column that passes through the schema stage produces a `SchemaHandoff` entry (see the JSON artifact later in this section). The most important fields in that entry are `pandas_dtype`, which is the inferred target dtype after cleaning, and `detected_pattern`, which is the canonical form the cleaned values should follow. Both fields are produced by the `dtype-inference` agent from the bounded column profile. The table below maps those fields back to concrete columns from the two evaluation datasets.
 
-| Dataset | Column | Raw dtype | Representative raw values | `detected_pattern` | Target `pandas_dtype` |
-|---------|--------|-----------|--------------------------|--------------------|-----------------------|
-| `spesa.csv` | `rata` | `object` | `202402`, `2024-06`, `04/2024`, `FEB-2024` | `YYYYMM period key` | `Int64` |
-| `spesa.csv` | `spesa` | `object` | `182904.47999999954`, `2110811.34`, `N.D.` | decimal amount | `Float64` |
-| `spesa.csv` | `aggregation-time` | `object` | `2024-03-11T02:01:04.421`, `24.10.2024`, `2024/04/11` | ISO-8601 datetime | `datetime64[ns]` |
-| `spesa.csv` | `2cod_imposta` | `object` | `1010`, `1030`, `2010` | integer tax code | `Int64` |
-| `attivazioniCessazioni.csv` | `mese` | `object` | `11`, `7`, `NOV`, `Novembre`, `mese 2` | `month number (1-12)` | `Int64` |
-| `attivazioniCessazioni.csv` | `anno` | `object` | `2023`, `23`, `2023.`, `anno 2023` | `4-digit year` | `Int64` |
-| `attivazioniCessazioni.csv` | `aggregation-time` | `object` | `2025-06-18T16:15:20.148346`, `GIU 18 2025`, `18.06.2025`, `2025/06/18` | ISO-8601 datetime | `datetime64[ns]` |
-| `attivazioniCessazioni.csv` | `provincia_sede` | `object` | `Roma`, `MI`, `NAPOLI`, `Torino ` | normalized province label | `string` |
-
 The `detected_pattern` field is the value that the consistency stage (Section 2.6.4) will later use as a semantic contract when deciding whether observed value shapes count as inconsistent.
-
 
 The stage begins with **deterministic profiling** in `src/tools/schema_tools.py`. It computes non-null counts, distinct counts, numeric parse percentages, datetime parse percentages, and representative value samples. 
 
@@ -183,29 +171,31 @@ The same `dtype-inference` call **returns** not only the **target cleaned pandas
 This **hybrid design is deliberate**. **Parse rates and naming rules** are **straightforward deterministic checks**. Interpreting a messy profile as a cleaned target dtype benefits from semantic reasoning, but only when that reasoning is grounded in bounded evidence rather than raw unrestricted data. The stage therefore **uses Python for measurement and the agent for constrained interpretation**, then **passes the inferred dtype and pattern information** forward to the **later consistency stage**.
 
 
+``` json
     {
-      "name": "RATA",
-      "pandas_dtype": "Int64",
-      "numeric_role": "code",
+      "name": "aggregation-time",
+      "pandas_dtype": "datetime64[ns]",
+      "numeric_role": null,
       "string_role": null,
-      "detected_pattern": "YYYYMM period key (with some month-name formats)",
-      "rationale": "Numeric parsing is high (96.0%) and dominant values are compact period keys like '202311' and '202307'; mixed textual month formats (e.g., 'LUG-2024', 'DIC-2023') are treated as corruption/noise for the intended period key.",
-      "non_null_rows": 20102,
-      "distinct_non_null_values": 96,
-      "numeric_parse_pct": 96.01034722913143,
-      "datetime_parse_pct": 0.0,
+      "detected_pattern": "ISO 8601 / date-time",
+      "rationale": "Datetime parse is 99.0% with clear timestamp/date strings (e.g., '2024-03-11T02:01:04.421', '24.10.2024'). Minority non-standard formats are treated as corruption; cleaned dtype is datetime64[ns].",
+      "non_null_rows": 7543,
+      "distinct_non_null_values": 66,
+      "numeric_parse_pct": 0.0,
+      "datetime_parse_pct": 99.03221529895268,
       "empty_like_pct": 0.0,
       "sample_values": [
-        "202311",
-        "202307",
-        "202308",
-        "202304",
-        "202306"
+        "2024-03-11T02:01:04.421",
+        "2024-07-11T03:01:16.866",
+        "2024-09-11T03:01:11.704",
+        "2024-05-11T03:01:07.269",
+        "2024-11-11T02:00:28.485"
       ],
       "naming_valid": false,
-      "rename_suggestion": "rata",
-      "naming_reason": "Column name contains uppercase letters, which violates the lowercase snake_case naming rule."
+      "rename_suggestion": "aggregation_time",
+      "naming_reason": "Column name contains a hyphen, which violates the lowercase snake_case naming rule."
     }
+```
 
 #### 2.5.3 Completeness Analysis
 
@@ -219,22 +209,23 @@ Starting from this placeholder list, `src/tools/completeness_tools.py` **builds 
 
 The **role of the agent** at this stage is not to discover missingness independently, but to **transform measured evidence into a downstream-readable handoff**. The **practical benefit** is that **later stages do not need to repeat the same reasoning**. They receive an explicit statement of which columns contain hidden missingness, which placeholder families are present, and whether some columns should be reviewed because they contain almost no meaningful information.
 
-
+``` json
     {
-      "column_name": "regione_sede",
-      "completeness_pct": 96.39339369216994,
-      "missing_like_count": 725,
+      "column_name": "ente",
+      "completeness_pct": 96.26143444252949,
+      "missing_like_count": 282,
       "missing_like_examples": [
+        "unknown",
         "",
+        "//",
         "?",
         "n.d.",
-        "-",
-        "//"
+        "-"
       ],
       "sparse_candidate": false,
-      "recommended_action": "Normalize placeholder tokens (including empty string, ?, n.d., -, //) and review missing/placeholder values in regione_sede"
+      "recommended_action": "Targeted review of missing/placeholder-like values in this column; standardize placeholder tokens (e.g., unknown, //, n.d., -) and empty strings upstream."
     }
-
+```
 
 #### 2.5.4 Format Consistency Validation
 
@@ -268,6 +259,7 @@ The **slow path** is therefore **not an unconstrained semantic guess**. It is a 
 
 This **selectivity is essential**. **Not every variation should trigger cleaning**. Free-text fields, notes, names, or descriptive categorical columns may contain diverse content without containing any format error. The stage therefore emits a `FormatConsistencyFinding` only when a **clear canonical representation exists** and a **measurable inconsistent minority can reasonably be normalized toward it**. This is the **core trigger for later cleaner generation**.
 
+``` json
     {
       "column_name": "RATA",
       "expected_pattern": "YYYYMM period key (with some month-name formats)",
@@ -283,6 +275,7 @@ This **selectivity is essential**. **Not every variation should trigger cleaning
       "evidence": "Schema handoff identified target dtype 'Int64' and pattern 'YYYYMM period key (with some month-name formats)'. Schema-guided validation found 802 rows that do not match the target numeric representation.",
       "suggested_strategy": "Target format: 'YYYYMM period key (with some month-name formats)'. Dominant valid shape: '999999' — values matching this shape are already valid, preserve them. \nExamples of already-valid values (the OUTPUT must look exactly like these): '202311', '202307', '202308', '202304', '202306'.\n\nHandle every outlier shape group below by inferring the transformation from the examples. For each group, verify your transformation produces output that matches the already-valid examples above — same length, same character structure, same field order (e.g. YYYY before MM, not MM before YYYY). Use partial matches, prefix stripping, abbreviation expansion, or abbreviation mapping as needed. Map to null ONLY when a value is completely unrecognisable — never null a value that contains recoverable information:\n\n  shape '9999-99': e.g. '2023-09', '2023-12', '2024-02', '2023-04', '2024-04'\n  shape 'AAA-9999': e.g. 'DIC-2023', 'SET-2023', 'OTT-2023', 'SET-2024', 'DIC-2024'\n  shape '99/9999': e.g. '09/2024', '12/2023', '03/2024', '04/2023', '12/2024'\n\nEVERY value in example_inconsistent_values must be explicitly handled — do not leave any outlier value unchanged unless it already matches the target format. Prefer a best-effort conversion over null whenever the value contains recoverable information."
     }
+```
 
 
 #### 2.5.5 Anomaly Detection
@@ -310,6 +303,27 @@ $$ \text{rarethreshold} = \max(1, \lfloor 0.005 \times n \rfloor) $$
 where `n` is the number of non-null, non-placeholder rendered values in the column. **Every category whose frequency is less than or equal** to that threshold is **treated as a rare-category candidate**. The total **number of rows covered by those rare labels** becomes the **affected-row count**. The **severity** is set to `medium` when at most 5 rows are affected and `low` otherwise, because rare labels are treated as **weak anomaly signals rather than as strong evidence of error**.
 
 One additional implementation detail matters here. Before the final anomaly report is assembled, `src/validation/anomaly.py` **suppresses duplicate-semantic aliases** that were already identified in the schema handoff. This **prevents the same anomaly from being reported twice** merely because the dataset contains two columns that normalize to the same meaning. The output of the stage is therefore interpretive rather than generative. It **highlights potential risk signals that deserve attention**, but it does **not convert those signals directly into cleaning code**.
+
+``` json
+    {
+      "column_name": "spesa",
+      "anomaly_type": "numeric_outlier",
+      "severity": "high",
+      "affected_rows": 1101,
+      "example_values": [
+        "43365008.73",
+        "7639226.66",
+        "3887279.49",
+        "9518447.34",
+        "10455819.51",
+        "87912478.86",
+        "6543617.570000316",
+        "6807615.07"
+      ],
+      "evidence": "1101 rows fall outside the robust IQR band [-1879828.180, 2512978.350] computed from Q1=2803.190, Q3=630346.980.",
+      "suggested_action": "Review whether these values are genuine extreme cases or unit/format errors before imputation or removal."
+    }
+```
 
 #### 2.5.6 Cross-Column Validation and Duplicate Detection
 
@@ -485,7 +499,7 @@ More specifically, the experiments were used to validate the target contribution
 Main purpose.
 The first experiment addressed the cost and scalability of schema and format inference. An early design gave the model entire raw columns, but this quickly produced very large prompts and unsustainable token usage on realistic datasets. The goal of this experiment was therefore to determine whether the system could preserve useful semantic inference while drastically reducing prompt size.
 
-Baseline(s).
+Baseline.
 The baseline was the earliest full-column prompting strategy, in which the model received much larger portions of raw column content directly. The final approach replaced this with a mixed strategy: a random sample of up to 5% of dataset rows, capped at 500 unique non-null values per column where appropriate, combined with full-column deterministic statistics computed locally.
 
 Evaluation metric(s).
@@ -499,7 +513,7 @@ This experiment led to one of the central design choices of the final repository
 Main purpose.
 A second experimental question was whether the cleaning stage should ask the LLM to reason directly over full raw column contents or whether it should generate executable code from a compact contract. The purpose here was to improve reproducibility and make cleaning behavior inspectable and reusable.
 
-Baseline(s).
+Baseline.
 The baseline was a less structured design in which the model was given broader raw evidence and a more open-ended cleaning task. The final design instead constructs a ColumnCleaningRequest containing the target format, dominant valid examples, representative inconsistent examples, and explicit preservation requirements. The generator then produces a self-contained Python function in a remote code-execution sandbox from this compact request rather than from the full column.
 
 Evaluation metric(s).
@@ -513,7 +527,7 @@ This experiment led to a cleaner-generation process in which the LLM sees only d
 Main purpose.
 A major practical issue during development was that one-shot code generation often produced cleaners that looked plausible but still failed operationally. The purpose of this experiment was to determine whether an explicit host-side validator and repair loop would improve reliability compared with accepting or rejecting one-shot generations.
 
-Baseline(s).
+Baseline.
 The baseline was one-shot generation without a structured repair process. The improved design validates generated code locally after each attempt and, when issues are found, passes the authoritative validation failures to a repair critic that guides the next attempt.
 
 Evaluation metric(s).
@@ -526,7 +540,7 @@ This experiment produced the generation-validation-critic loop implemented in th
 Main purpose.
 Another key experimental question was whether local acceptance on representative examples was sufficient to trust a cleaner, or whether the cleaned dataset still needed to be re-evaluated after full-column execution. The purpose of this experiment was to validate the decision to include a separate verification stage.
 
-Baseline(s).
+Baseline.
 The baseline was the implicit assumption that a cleaner passing local example-based validation could be treated as successful. The final design instead applies accepted cleaners to the real dataset and then re-runs consistency checks on the cleaned output to compare before-versus-after findings.
 
 Evaluation metric(s).
