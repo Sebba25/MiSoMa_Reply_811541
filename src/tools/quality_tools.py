@@ -46,9 +46,7 @@ def detect_numeric_outlier_candidates(df: pd.DataFrame, schema_columns: list[Any
     findings: list[dict[str, Any]] = []
     for column in schema_columns:
         # Codes and indicators may be numeric but should not be judged as continuous measures.
-        if column.pandas_dtype not in {"Int64", "Float64"}:
-            continue
-        if column.numeric_role in {"code", "indicator"}:
+        if column.pandas_dtype not in {"Int64", "Float64"} or column.numeric_role in {"code", "indicator"}:
             continue
 
         numeric = _series_to_numeric(df[column.name]).dropna()
@@ -70,11 +68,10 @@ def detect_numeric_outlier_candidates(df: pd.DataFrame, schema_columns: list[Any
         if not outlier_index:
             continue
 
-        raw_examples = [
-            render_cell_text(df.at[index, column.name])
-            for index in outlier_index[:10]
-        ]
+        # Show raw example values from the original dataframe
+        raw_examples = [render_cell_text(df.at[index, column.name]) for index in outlier_index[:10]]
         example_values = [value for value in raw_examples if value is not None]
+        # Flag as high severity when outliers are more than 2% of the data
         severity = "high" if len(outlier_index) / max(len(df), 1) >= 0.02 else "medium"
         findings.append(
             {
@@ -89,6 +86,51 @@ def detect_numeric_outlier_candidates(df: pd.DataFrame, schema_columns: list[Any
                 ),
                 "suggested_action": (
                     "Review whether these values are genuine extreme cases or unit/format errors before imputation or removal."
+                ),
+            }
+        )
+
+    return findings
+
+
+def detect_negative_measure_candidates(df: pd.DataFrame, schema_columns: list[Any]) -> list[dict[str, Any]]:
+    """Detect negative values in measure columns that are otherwise overwhelmingly non-negative."""
+    findings: list[dict[str, Any]] = []
+    for column in schema_columns:
+        if column.pandas_dtype not in {"Int64", "Float64"} or column.numeric_role in {"code", "indicator"}:
+            continue
+
+        numeric = _series_to_numeric(df[column.name]).dropna()
+        if len(numeric) < 20:
+            continue
+
+        negative_mask = numeric < 0
+        negative_index = list(numeric[negative_mask].index)
+        if not negative_index:
+            continue
+
+        # Only flag rare negatives in columns that behave as mostly non-negative measures.
+        if float((numeric >= 0).mean()) < 0.95:
+            continue
+
+        # Show raw example values from the original dataframe
+        raw_examples = [render_cell_text(df.at[index, column.name]) for index in negative_index[:10]]
+        example_values = [value for value in raw_examples if value is not None]
+        # Flag as high if negatives are more than 2%
+        severity = "high" if len(negative_index) / max(len(df), 1) >= 0.01 else "medium"
+        findings.append(
+            {
+                "column_name": column.name,
+                "anomaly_type": "negative_value",
+                "severity": severity,
+                "affected_rows": len(negative_index),
+                "example_values": list(dict.fromkeys(example_values))[:8],
+                "evidence": (
+                    f"{len(negative_index)} negative values were found while {float((numeric >= 0).mean())* 100:.2f}% "
+                    f"of parsed values in the column are non-negative."
+                ),
+                "suggested_action": (
+                    "Review whether these negative values represent valid adjustments, refunds, or sign errors before correction."
                 ),
             }
         )

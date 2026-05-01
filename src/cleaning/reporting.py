@@ -439,7 +439,7 @@ def _build_narrative_section_specs(final_report: FinalPipelineReport) -> list[tu
             "\n".join(
                 [
                     "FORMAT REQUIREMENTS:",
-                    "- Separate numeric outliers and rare categories clearly.",
+                    "- Separate numeric outliers, negative-value findings, and rare categories clearly.",
                     "- Use bullet lists or short subsections; a table is optional.",
                     "- If there are no findings, keep the section concise and say so once.",
                     "- Do not repeat the same 'no anomalies' statement in multiple paragraphs.",

@@ -204,7 +204,7 @@ class ConsistencyVerificationReport(BaseModel):
 
 class AnomalyFinding(BaseModel):
     column_name: str
-    anomaly_type: Literal["numeric_outlier", "rare_category"]
+    anomaly_type: Literal["numeric_outlier", "rare_category", "negative_value"]
     severity: Literal["low", "medium", "high"]
     affected_rows: int = Field(ge=0)
     example_values: list[str] = Field(default_factory=list)

@@ -260,7 +260,7 @@ anomaly_summary_agent = Agent(
         "Inspect the provided anomaly findings document and write a short, precise downstream summary. "
         "Return valid JSON only that matches the AnomalySummaryOutput schema exactly. "
         "Do not infer new anomalies, do not invent remediation beyond the provided findings, and do not use markdown. "
-        "Mention which columns carry the most severe or highest-volume anomalies, distinguish numeric outliers from rare-category findings, "
+        "Mention which columns carry the most severe or highest-volume anomalies, distinguish numeric outliers, negative-value findings, and rare-category findings, "
         "and state clearly when no anomalies were found."
     ),
 )

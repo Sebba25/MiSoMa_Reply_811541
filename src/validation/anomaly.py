@@ -1,7 +1,8 @@
-"""anomaly.py (validation pipeline): numeric outlier and rare-category detection.
+"""anomaly.py (validation pipeline): numeric outliers, negative values, and rare categories.
 
 This module exposes one public function, run_anomaly_detection, which runs heuristic
-detectors locally to find numeric outliers and rare categorical values. Columns that were
+detectors locally to find numeric outliers, suspicious negative measure values, and rare
+categorical values. Columns that were
 flagged as duplicate-semantic peers in the schema stage are suppressed for the non-preferred
 alias to avoid reporting the same anomaly twice. The agent only writes the human-readable
 summary over the already-built findings.
@@ -16,6 +17,7 @@ from src.core.agents import anomaly_summary_agent
 from src.core.cache import load_anomaly, load_schema_handoff, save_anomaly
 from src.core.models import AnomalyDetectionReport, AnomalyFinding, SchemaColumnEntry
 from src.tools import (
+    detect_negative_measure_candidates,
     detect_numeric_outlier_candidates,
     detect_rare_category_candidates,
     load_dataset_frame,
@@ -71,11 +73,12 @@ def run_anomaly_detection(path: Path, reuse_cache: bool = False) -> AnomalyDetec
     # Get the set of column names that should be suppressed in anomaly reporting due to being duplicate-semantic aliases of a preferred column
     suppressed_columns = _duplicate_semantic_suppressed_columns(handoff.columns, handoff.duplicate_groups)
 
-    # Run both detectors and filter out suppressed duplicate-semantic aliases
+    # Run all anomaly detectors and filter out suppressed duplicate-semantic aliases
     findings = [
         AnomalyFinding(**finding)
         for finding in (
             detect_numeric_outlier_candidates(df, schema_columns) # Detect numeric outliers based on IQR heuristics
+            + detect_negative_measure_candidates(df, schema_columns) # Detect negative values in mostly non-negative measure columns
             + detect_rare_category_candidates(df, schema_columns) # Detect rare categorical values based on low-cardinality heuristics
         )
         if finding["column_name"] not in suppressed_columns
@@ -83,7 +86,7 @@ def run_anomaly_detection(path: Path, reuse_cache: bool = False) -> AnomalyDetec
     # Sort by volume descending so the most impactful findings appear first
     findings.sort(key=lambda finding: (-finding.affected_rows, finding.column_name, finding.anomaly_type))
     fallback_summary = (
-        f"Detected {len(findings)} anomaly findings across numeric outliers and rare categorical values."
+        f"Detected {len(findings)} anomaly findings across numeric outliers, negative values, and rare categorical values."
         if findings
         else "No anomaly findings were detected by the current heuristic checks."
     )
